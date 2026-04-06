@@ -119,3 +119,48 @@ val snapshot = hud.metricsSnapshot()
 - replacedByCoalesce
 - queueOverflowDropped
 - preemptions
+
+---
+
+## Production playbook (SLO-тюнинг)
+
+### 1) Async-интеграция (обязательно)
+
+- Если событие/обработчик работает не на main thread, вызывайте только:
+  - `submitActionBarThreadSafe(...)`
+  - `submitTitleThreadSafe(...)`
+  - `submitScoreboardThreadSafe(...)`
+- Прямые `submit*` используйте только на main thread.
+
+### 2) Базовые SLO для HUD
+
+Рекомендуемые ориентиры для большого онлайна:
+- `rejectedByRateLimit / submitted < 5%` в среднем.
+- `queueOverflowDropped == 0` на нормальной нагрузке.
+- `droppedByPolicy` допустим только для намеренных `DROP_IF_BUSY` сценариев.
+- `preemptions` не должен расти линейно с онлайном (признак конфликтов приоритетов).
+
+### 3) Тюнинг rate-limit по каналам
+
+Тюнинг выполняется через `config.yml`:
+- `rate-limit.action-bar` — обычно самый “шумный” канал.
+- `rate-limit.title` — ограничивайте строже, чтобы не мигал экран.
+- `rate-limit.scoreboard` — обновления реже, но стабильнее.
+
+Правило:
+- если растет `rejectedByRateLimit` и теряются важные сообщения → увеличивайте `capacity`/`refill-per-second`;
+- если растет визуальный спам → уменьшайте `refill-per-second` и/или повышайте `sourceCooldownTicks` в запросах.
+
+### 4) Приоритеты и политики
+
+- Критичные сообщения (`CRITICAL`/`HIGH`) отправляйте с `PREEMPT` только при реальной необходимости.
+- Частые прогресс-обновления используйте через `COALESCE` + `dedupKey`.
+- Декоративные/маловажные события — `DROP_IF_BUSY`.
+
+### 5) Рекомендуемый operational цикл
+
+1. Снять baseline метрик на обычном онлайне.
+2. Провести пиковый сценарий (ивент/вайп/массовая активность).
+3. Проверить долю reject/drop/preempt.
+4. Подкрутить лимиты в `config.yml`.
+5. Повторить тест до стабильного профиля.

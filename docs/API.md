@@ -94,6 +94,8 @@ HudOrchestrator подписан на `PluginDisableEvent` и автоматич
 
 Это предотвращает зависшие HUD-сообщения и «мертвого владельца» scoreboard после `/reload`, PlugMan-like reload или ручного disable/enable.
 
+При очистке состояния HudOrchestrator также пытается восстановить предыдущий scoreboard игрока, если текущий был установлен оркестратором.
+
 ---
 
 ## Ограничения

@@ -67,8 +67,11 @@ class HudOrchestratorService(
     fun shutdown() {
         task?.cancel()
         task = null
-        states.values.forEach { it.clearVisualState() }
+        states.forEach { (playerId, state) ->
+            state.clearVisualState(Bukkit.getPlayer(playerId))
+        }
         states.clear()
+        activePlayers.clear()
     }
 
     @EventHandler
@@ -159,7 +162,7 @@ class HudOrchestratorService(
     }
 
     override fun clearPlayer(playerId: UUID) {
-        states.remove(playerId)?.clearVisualState()
+        states.remove(playerId)?.clearVisualState(Bukkit.getPlayer(playerId))
         activePlayers.remove(playerId)
     }
 
@@ -180,7 +183,7 @@ class HudOrchestratorService(
 
             val player = Bukkit.getPlayer(playerId)
             if (player == null || !player.isOnline) {
-                state.clearVisualState()
+                state.clearVisualState(null)
                 states.remove(playerId)
                 iterator.remove()
                 continue
@@ -188,6 +191,7 @@ class HudOrchestratorService(
 
             state.process(player, nowTick)
             if (state.isIdle()) {
+                state.clearVisualState(player)
                 states.remove(playerId)
                 iterator.remove()
             }
@@ -233,6 +237,7 @@ private class PlayerHudState(
     private var activeScoreboard: ActiveEntry<QueueEntry.Scoreboard>? = null
     private var scoreboardOwner: String? = null
     private var scoreboardView: ScoreboardViewState? = null
+    private var previousScoreboard: org.bukkit.scoreboard.Scoreboard? = null
 
     fun process(player: Player, nowTick: Long) {
         processActionBar(player, nowTick)
@@ -321,14 +326,19 @@ private class PlayerHudState(
         return removed
     }
 
-    fun clearVisualState() {
+    fun clearVisualState(player: Player?) {
         actionBarQueue.clear()
         titleQueue.clear()
         scoreboardQueue.clear()
         activeActionBar = null
         activeTitle = null
         activeScoreboard = null
+        scoreboardOwner = null
         scoreboardView = null
+        if (player != null && previousScoreboard != null && player.scoreboard != previousScoreboard) {
+            player.scoreboard = previousScoreboard!!
+        }
+        previousScoreboard = null
     }
 
     private fun processActionBar(player: Player, nowTick: Long) {
@@ -383,6 +393,9 @@ private class PlayerHudState(
                     nowTick + max(selected.request.meta.maxShowTicks.toLong(), 40L),
                     nowTick
                 )
+                if (scoreboardView == null) {
+                    previousScoreboard = player.scoreboard
+                }
                 scoreboardView = ScoreboardRenderer.render(player, selected.request, scoreboardView)
             }
         }

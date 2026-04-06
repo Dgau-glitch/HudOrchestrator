@@ -36,6 +36,12 @@ val handle = hud.submitActionBar(
 )
 ```
 
+Если вызов идет из async-кода, используйте thread-safe helper:
+
+```kotlin
+hud.submitActionBarThreadSafe(plugin, player.uniqueId, request)
+```
+
 ---
 
 ## Модель приоритета и очереди
@@ -57,6 +63,11 @@ val handle = hud.submitActionBar(
 - optional cooldown (`sourceCooldownTicks`).
 
 Если лимит превышен, `submit*` вернет `null`.
+
+Лимиты настраиваются в `config.yml` по каналам:
+- `rate-limit.action-bar`
+- `rate-limit.title`
+- `rate-limit.scoreboard`
 
 ---
 
@@ -91,3 +102,20 @@ HudOrchestrator подписан на `PluginDisableEvent` и автоматич
 - Scoreboard рендер ограничен 15 строками.
 - При переполнении очереди слабоприоритетные элементы могут быть вытеснены.
 
+---
+
+## Метрики
+
+Доступен срез метрик через API:
+
+```kotlin
+val snapshot = hud.metricsSnapshot()
+```
+
+Поля snapshot:
+- submitted
+- rejectedByRateLimit
+- droppedByPolicy
+- replacedByCoalesce
+- queueOverflowDropped
+- preemptions

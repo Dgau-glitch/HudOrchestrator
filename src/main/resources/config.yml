@@ -1,0 +1,10 @@
+rate-limit:
+  action-bar:
+    capacity: 20.0
+    refill-per-second: 10.0
+  title:
+    capacity: 5.0
+    refill-per-second: 2.0
+  scoreboard:
+    capacity: 4.0
+    refill-per-second: 1.0

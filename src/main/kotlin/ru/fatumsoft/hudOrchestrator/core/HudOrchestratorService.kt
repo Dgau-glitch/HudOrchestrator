@@ -10,10 +10,12 @@ import org.bukkit.scheduler.BukkitTask
 import org.bukkit.scoreboard.Criteria
 import org.bukkit.scoreboard.DisplaySlot
 import org.bukkit.scoreboard.Objective
+import net.kyori.adventure.text.Component
 import ru.fatumsoft.hudOrchestrator.api.ActionBarRequest
 import ru.fatumsoft.hudOrchestrator.api.DeliveryPolicy
 import ru.fatumsoft.hudOrchestrator.api.HudChannel
 import ru.fatumsoft.hudOrchestrator.api.HudHandle
+import ru.fatumsoft.hudOrchestrator.api.HudMetricsSnapshot
 import ru.fatumsoft.hudOrchestrator.api.HudOrchestratorApi
 import ru.fatumsoft.hudOrchestrator.api.ScoreboardRequest
 import ru.fatumsoft.hudOrchestrator.api.TitleRequest
@@ -21,15 +23,38 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.LongAdder
 import kotlin.math.max
 
+data class ChannelRateLimitConfig(
+    val capacity: Double,
+    val refillPerSecond: Double
+)
+
+data class HudOrchestratorRuntimeConfig(
+    val actionBarRateLimit: ChannelRateLimitConfig,
+    val titleRateLimit: ChannelRateLimitConfig,
+    val scoreboardRateLimit: ChannelRateLimitConfig
+) {
+    fun forChannel(channel: HudChannel): ChannelRateLimitConfig {
+        return when (channel) {
+            HudChannel.ACTION_BAR -> actionBarRateLimit
+            HudChannel.TITLE -> titleRateLimit
+            HudChannel.SCOREBOARD -> scoreboardRateLimit
+        }
+    }
+}
+
 class HudOrchestratorService(
-    private val plugin: JavaPlugin
+    private val plugin: JavaPlugin,
+    private val runtimeConfig: HudOrchestratorRuntimeConfig
 ) : HudOrchestratorApi, Listener {
 
     private val states = ConcurrentHashMap<UUID, PlayerHudState>()
     private val sequence = AtomicLong(0L)
     private var task: BukkitTask? = null
+    private val warnedInvalidSources = ConcurrentHashMap.newKeySet<String>()
+    private val metrics = HudMetrics()
 
     fun start() {
         plugin.server.pluginManager.registerEvents(this, plugin)
@@ -52,6 +77,7 @@ class HudOrchestratorService(
     }
 
     override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? {
+        validateSourceId(request.meta.sourceId)
         if (!isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) return null
         val nowTick = currentTick()
         val entry = QueueEntry.ActionBar(
@@ -61,11 +87,15 @@ class HudOrchestratorService(
             expireTick = nowTick + max(request.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        playerState(playerId).actionBarQueue.offer(entry)
+        val result = playerState(playerId).actionBarQueue.offer(entry)
+        metrics.submitted.increment()
+        if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
         return entry.handle
     }
 
     override fun submitTitle(playerId: UUID, request: TitleRequest): HudHandle? {
+        validateSourceId(request.meta.sourceId)
         if (!isAccepted(playerId, HudChannel.TITLE, request.meta.sourceId, request.meta.sourceCooldownTicks)) return null
         val nowTick = currentTick()
         val entry = QueueEntry.Title(
@@ -75,11 +105,15 @@ class HudOrchestratorService(
             expireTick = nowTick + max(request.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        playerState(playerId).titleQueue.offer(entry)
+        val result = playerState(playerId).titleQueue.offer(entry)
+        metrics.submitted.increment()
+        if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
         return entry.handle
     }
 
     override fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle? {
+        validateSourceId(request.meta.sourceId)
         if (!isAccepted(playerId, HudChannel.SCOREBOARD, request.meta.sourceId, request.meta.sourceCooldownTicks)) return null
         val nowTick = currentTick()
         val entry = QueueEntry.Scoreboard(
@@ -89,7 +123,10 @@ class HudOrchestratorService(
             expireTick = nowTick + max(request.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        playerState(playerId).scoreboardQueue.offer(entry)
+        val result = playerState(playerId).scoreboardQueue.offer(entry)
+        metrics.submitted.increment()
+        if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
         return entry.handle
     }
 
@@ -108,6 +145,8 @@ class HudOrchestratorService(
     override fun clearPlayer(playerId: UUID) {
         states.remove(playerId)?.clearVisualState()
     }
+
+    override fun metricsSnapshot(): HudMetricsSnapshot = metrics.snapshot()
 
     private fun tick() {
         val nowTick = currentTick()
@@ -134,27 +173,44 @@ class HudOrchestratorService(
     }
 
     private fun playerState(playerId: UUID): PlayerHudState {
-        return states.computeIfAbsent(playerId) { PlayerHudState() }
+        return states.computeIfAbsent(playerId) { PlayerHudState(runtimeConfig, metrics) }
     }
 
     private fun isAccepted(playerId: UUID, channel: HudChannel, sourceId: String, cooldownTicks: Int): Boolean {
         val state = playerState(playerId)
-        return state.rateLimiter.accept(channel, sourceId, currentTick(), cooldownTicks)
+        val accepted = state.rateLimiter.accept(channel, sourceId, currentTick(), cooldownTicks)
+        if (!accepted) metrics.rejectedByRateLimit.increment()
+        return accepted
     }
 
     private fun currentTick(): Long = Bukkit.getCurrentTick().toLong()
+
+    private fun validateSourceId(sourceId: String) {
+        if (SOURCE_PATTERN.matches(sourceId)) return
+        if (warnedInvalidSources.add(sourceId)) {
+            plugin.logger.warning("HudOrchestrator: sourceId '$sourceId' has non-recommended format. Use PluginName[:subsystem].")
+        }
+    }
+
+    companion object {
+        private val SOURCE_PATTERN = Regex("^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*$")
+    }
 }
 
-private class PlayerHudState {
+private class PlayerHudState(
+    runtimeConfig: HudOrchestratorRuntimeConfig,
+    private val metrics: HudMetrics
+) {
     val actionBarQueue = HudQueue<QueueEntry.ActionBar>(maxSize = 64)
     val titleQueue = HudQueue<QueueEntry.Title>(maxSize = 32)
     val scoreboardQueue = HudQueue<QueueEntry.Scoreboard>(maxSize = 32)
-    val rateLimiter = PlayerRateLimiter()
+    val rateLimiter = PlayerRateLimiter(runtimeConfig)
 
     private var activeActionBar: ActiveEntry<QueueEntry.ActionBar>? = null
     private var activeTitle: ActiveEntry<QueueEntry.Title>? = null
     private var activeScoreboard: ActiveEntry<QueueEntry.Scoreboard>? = null
     private var scoreboardOwner: String? = null
+    private var scoreboardView: ScoreboardViewState? = null
 
     fun process(player: Player, nowTick: Long) {
         processActionBar(player, nowTick)
@@ -241,6 +297,7 @@ private class PlayerHudState {
         activeActionBar = null
         activeTitle = null
         activeScoreboard = null
+        scoreboardView = null
     }
 
     private fun processActionBar(player: Player, nowTick: Long) {
@@ -295,7 +352,7 @@ private class PlayerHudState {
                     nowTick + max(selected.request.meta.maxShowTicks.toLong(), 40L),
                     nowTick
                 )
-                selected.send(player)
+                scoreboardView = ScoreboardRenderer.render(player, selected.request, scoreboardView)
             }
         }
     }
@@ -313,11 +370,15 @@ private class PlayerHudState {
 
         if (policy == DeliveryPolicy.DROP_IF_BUSY && current != null && !current.isExpired(nowTick)) {
             queue.remove(best.handle.id)
+            metrics.droppedByPolicy.increment()
             return null
         }
 
         if (policy == DeliveryPolicy.PREEMPT) {
             queue.remove(best.handle.id)
+            if (current != null && !current.isExpired(nowTick)) {
+                metrics.preemptions.increment()
+            }
             return best
         }
 
@@ -349,14 +410,14 @@ private class HudQueue<T : QueueEntry>(
 ) {
     private val queue = ArrayList<T>(maxSize)
 
-    fun offer(entry: T) {
+    fun offer(entry: T): OfferResult {
         val meta = entry.requestMeta()
         val replaceBy = meta.dedupKey ?: meta.replaceGroup
         if (meta.policy == DeliveryPolicy.COALESCE && replaceBy != null) {
             val idx = queue.indexOfFirst { it.sourceId() == entry.sourceId() && (it.requestMeta().dedupKey == replaceBy || it.requestMeta().replaceGroup == replaceBy) }
             if (idx >= 0) {
                 queue[idx] = entry
-                return
+                return OfferResult.REPLACED_BY_COALESCE
             }
         }
 
@@ -364,29 +425,59 @@ private class HudQueue<T : QueueEntry>(
             val lowestIdx = queue.indices.minByOrNull { queue[it].priority() } ?: -1
             if (lowestIdx >= 0 && queue[lowestIdx].priority() < entry.priority()) {
                 queue[lowestIdx] = entry
+                return OfferResult.INSERTED
             }
-            return
+            return OfferResult.DROPPED_BY_OVERFLOW
         }
 
         queue += entry
+        return OfferResult.INSERTED
     }
 
-    fun remove(handleId: UUID): Boolean = queue.removeIf { it.handle.id == handleId }
+    fun remove(handleId: UUID): Boolean {
+        for (idx in queue.indices) {
+            if (queue[idx].handle.id == handleId) {
+                queue.removeAt(idx)
+                return true
+            }
+        }
+        return false
+    }
 
     fun removeBySource(sourceId: String): Int {
-        val before = queue.size
-        queue.removeIf { it.sourceId() == sourceId }
-        return before - queue.size
+        var removed = 0
+        var idx = queue.size - 1
+        while (idx >= 0) {
+            if (queue[idx].sourceId() == sourceId) {
+                queue.removeAt(idx)
+                removed++
+            }
+            idx--
+        }
+        return removed
     }
 
     fun removeBySourcePrefix(pluginName: String): Int {
-        val before = queue.size
-        queue.removeIf { it.sourceBelongsToPlugin(pluginName) }
-        return before - queue.size
+        var removed = 0
+        var idx = queue.size - 1
+        while (idx >= 0) {
+            if (queue[idx].sourceBelongsToPlugin(pluginName)) {
+                queue.removeAt(idx)
+                removed++
+            }
+            idx--
+        }
+        return removed
     }
 
     fun discardExpired(nowTick: Long) {
-        queue.removeIf { it.expireTick <= nowTick }
+        var idx = queue.size - 1
+        while (idx >= 0) {
+            if (queue[idx].expireTick <= nowTick) {
+                queue.removeAt(idx)
+            }
+            idx--
+        }
     }
 
     fun bestCandidate(nowTick: Long): T? {
@@ -406,12 +497,31 @@ private class HudQueue<T : QueueEntry>(
     fun clear() = queue.clear()
 }
 
+private enum class OfferResult {
+    INSERTED,
+    REPLACED_BY_COALESCE,
+    DROPPED_BY_OVERFLOW
+}
+
 private class PlayerRateLimiter {
     private val stateBySourceAndChannel = HashMap<String, SourceLimiterState>(32)
+    private val runtimeConfig: HudOrchestratorRuntimeConfig
+
+    constructor(runtimeConfig: HudOrchestratorRuntimeConfig) {
+        this.runtimeConfig = runtimeConfig
+    }
 
     fun accept(channel: HudChannel, sourceId: String, nowTick: Long, cooldownTicks: Int): Boolean {
         val key = "${channel.name}:$sourceId"
-        val state = stateBySourceAndChannel.computeIfAbsent(key) { SourceLimiterState(nowTick) }
+        val rate = runtimeConfig.forChannel(channel)
+        val state = stateBySourceAndChannel.computeIfAbsent(key) {
+            SourceLimiterState(
+                lastRefillTick = nowTick,
+                tokens = rate.capacity,
+                capacity = rate.capacity,
+                refillPerSecond = rate.refillPerSecond
+            )
+        }
 
         state.refill(nowTick)
 
@@ -503,36 +613,7 @@ private sealed class QueueEntry(
         override fun requestMeta() = request.meta
 
         override fun send(player: Player) {
-            val manager = Bukkit.getScoreboardManager()
-            val board = player.scoreboard.takeIf { it != manager.mainScoreboard } ?: manager.newScoreboard
-            val objective = ensureObjective(board)
-
-            objective.displayName(request.title)
-            objective.displaySlot = if (request.sidebar) DisplaySlot.SIDEBAR else DisplaySlot.PLAYER_LIST
-
-            // Remove previous scores from this objective
-            board.entries.forEach { board.resetScores(it) }
-
-            request.lines.take(15).forEachIndexed { index, component ->
-                val entry = "§${(index + 1).toString(16)}"
-                objective.getScore(entry).score = 15 - index
-                board.getTeam(entry)?.unregister()
-                val team = board.registerNewTeam(entry)
-                team.addEntry(entry)
-                team.prefix(component)
-            }
-
-            player.scoreboard = board
-        }
-
-        private fun ensureObjective(scoreboard: org.bukkit.scoreboard.Scoreboard): Objective {
-            val existing = scoreboard.getObjective(OBJECTIVE_NAME)
-            if (existing != null) return existing
-            return scoreboard.registerNewObjective(OBJECTIVE_NAME, Criteria.DUMMY, request.title)
-        }
-
-        companion object {
-            private const val OBJECTIVE_NAME = "hud_orchestrator"
+            ScoreboardRenderer.render(player, request, previous = null)
         }
     }
 }
@@ -540,4 +621,99 @@ private sealed class QueueEntry(
 private fun sourceBelongsToPlugin(sourceId: String, pluginName: String): Boolean {
     return sourceId.equals(pluginName, ignoreCase = true) ||
         sourceId.startsWith("$pluginName:", ignoreCase = true)
+}
+
+private data class ScoreboardViewState(
+    val board: org.bukkit.scoreboard.Scoreboard,
+    val objective: Objective,
+    var sidebar: Boolean,
+    var title: Component,
+    val linesByIndex: MutableMap<Int, Component>
+)
+
+private object ScoreboardRenderer {
+    private const val OBJECTIVE_NAME = "hud_orchestrator"
+    private val ENTRIES = Array(15) { i -> "§${(i + 1).toString(16)}" }
+
+    fun render(player: Player, request: ScoreboardRequest, previous: ScoreboardViewState?): ScoreboardViewState {
+        val manager = Bukkit.getScoreboardManager()
+        val board = previous?.board
+            ?: player.scoreboard.takeIf { it != manager.mainScoreboard }
+            ?: manager.newScoreboard
+        val objective = previous?.objective ?: ensureObjective(board, request.title)
+
+        if (previous == null || previous.title != request.title) {
+            objective.displayName(request.title)
+        }
+        val sidebar = request.sidebar
+        val slot = if (sidebar) DisplaySlot.SIDEBAR else DisplaySlot.PLAYER_LIST
+        if (previous == null || previous.sidebar != sidebar) {
+            objective.displaySlot = slot
+        }
+
+        val state = previous ?: ScoreboardViewState(
+            board = board,
+            objective = objective,
+            sidebar = sidebar,
+            title = request.title,
+            linesByIndex = HashMap(16)
+        )
+        state.sidebar = sidebar
+        state.title = request.title
+
+        val requested = request.lines.take(15)
+        for (index in 0 until 15) {
+            val old = state.linesByIndex[index]
+            val next = requested.getOrNull(index)
+            if (next == null) {
+                if (old != null) {
+                    val entry = ENTRIES[index]
+                    board.resetScores(entry)
+                    board.getTeam(entry)?.unregister()
+                    state.linesByIndex.remove(index)
+                }
+                continue
+            }
+
+            if (old == next) continue
+
+            val entry = ENTRIES[index]
+            val score = 15 - index
+            objective.getScore(entry).score = score
+            board.getTeam(entry)?.unregister()
+            val team = board.registerNewTeam(entry)
+            team.addEntry(entry)
+            team.prefix(next)
+            state.linesByIndex[index] = next
+        }
+
+        if (player.scoreboard !== board) {
+            player.scoreboard = board
+        }
+        return state
+    }
+
+    private fun ensureObjective(scoreboard: org.bukkit.scoreboard.Scoreboard, title: Component): Objective {
+        val existing = scoreboard.getObjective(OBJECTIVE_NAME)
+        if (existing != null) return existing
+        return scoreboard.registerNewObjective(OBJECTIVE_NAME, Criteria.DUMMY, title)
+    }
+}
+
+private class HudMetrics {
+    val submitted = LongAdder()
+    val rejectedByRateLimit = LongAdder()
+    val droppedByPolicy = LongAdder()
+    val replacedByCoalesce = LongAdder()
+    val queueOverflowDropped = LongAdder()
+    val preemptions = LongAdder()
+
+    fun snapshot(): HudMetricsSnapshot = HudMetricsSnapshot(
+        submitted = submitted.sum(),
+        rejectedByRateLimit = rejectedByRateLimit.sum(),
+        droppedByPolicy = droppedByPolicy.sum(),
+        replacedByCoalesce = replacedByCoalesce.sum(),
+        queueOverflowDropped = queueOverflowDropped.sum(),
+        preemptions = preemptions.sum()
+    )
 }

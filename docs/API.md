@@ -133,6 +133,7 @@ val snapshot = hud.metricsSnapshot()
   - `submitTitleThreadSafe(...)`
   - `submitScoreboardThreadSafe(...)`
 - Прямые `submit*` используйте только на main thread.
+- Если `submit*` вернул `null`, запрос был отклонён rate-limit/переполнением очереди — это не ошибка API, а сигнал backpressure.
 
 ### 2) Базовые SLO для HUD
 

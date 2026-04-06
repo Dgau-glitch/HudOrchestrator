@@ -105,9 +105,12 @@ class HudOrchestratorService(
         )
         val result = playerState(playerId).actionBarQueue.offer(entry)
         activePlayers.add(playerId)
+        if (result == OfferResult.DROPPED_BY_OVERFLOW) {
+            metrics.queueOverflowDropped.increment()
+            return null
+        }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
-        if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
         return entry.handle
     }
 
@@ -124,9 +127,12 @@ class HudOrchestratorService(
         )
         val result = playerState(playerId).titleQueue.offer(entry)
         activePlayers.add(playerId)
+        if (result == OfferResult.DROPPED_BY_OVERFLOW) {
+            metrics.queueOverflowDropped.increment()
+            return null
+        }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
-        if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
         return entry.handle
     }
 
@@ -143,9 +149,12 @@ class HudOrchestratorService(
         )
         val result = playerState(playerId).scoreboardQueue.offer(entry)
         activePlayers.add(playerId)
+        if (result == OfferResult.DROPPED_BY_OVERFLOW) {
+            metrics.queueOverflowDropped.increment()
+            return null
+        }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
-        if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
         return entry.handle
     }
 
@@ -189,7 +198,12 @@ class HudOrchestratorService(
                 continue
             }
 
-            state.process(player, nowTick)
+            try {
+                state.process(player, nowTick)
+            } catch (t: Throwable) {
+                plugin.logger.severe("HudOrchestrator tick failed for player=$playerId: ${t.message}")
+                t.printStackTrace()
+            }
             if (state.isIdle()) {
                 state.clearVisualState(player)
                 states.remove(playerId)

@@ -1,6 +1,8 @@
 package ru.fatumsoft.hudOrchestrator.core
 
 import org.bukkit.Bukkit
+import org.bukkit.event.player.PlayerKickEvent
+import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.server.PluginDisableEvent
@@ -51,6 +53,7 @@ class HudOrchestratorService(
 ) : HudOrchestratorApi, Listener {
 
     private val states = ConcurrentHashMap<UUID, PlayerHudState>()
+    private val activePlayers = ConcurrentHashMap.newKeySet<UUID>()
     private val sequence = AtomicLong(0L)
     private var task: BukkitTask? = null
     private val warnedInvalidSources = ConcurrentHashMap.newKeySet<String>()
@@ -76,6 +79,16 @@ class HudOrchestratorService(
         states.values.forEach { it.cancelByPluginName(disabledName) }
     }
 
+    @EventHandler
+    fun onPlayerQuit(event: PlayerQuitEvent) {
+        clearPlayer(event.player.uniqueId)
+    }
+
+    @EventHandler
+    fun onPlayerKick(event: PlayerKickEvent) {
+        clearPlayer(event.player.uniqueId)
+    }
+
     override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? {
         validateSourceId(request.meta.sourceId)
         if (!isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) return null
@@ -88,6 +101,7 @@ class HudOrchestratorService(
             seq = sequence.incrementAndGet()
         )
         val result = playerState(playerId).actionBarQueue.offer(entry)
+        activePlayers.add(playerId)
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
@@ -106,6 +120,7 @@ class HudOrchestratorService(
             seq = sequence.incrementAndGet()
         )
         val result = playerState(playerId).titleQueue.offer(entry)
+        activePlayers.add(playerId)
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
@@ -124,6 +139,7 @@ class HudOrchestratorService(
             seq = sequence.incrementAndGet()
         )
         val result = playerState(playerId).scoreboardQueue.offer(entry)
+        activePlayers.add(playerId)
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         if (result == OfferResult.DROPPED_BY_OVERFLOW) metrics.queueOverflowDropped.increment()
@@ -144,29 +160,35 @@ class HudOrchestratorService(
 
     override fun clearPlayer(playerId: UUID) {
         states.remove(playerId)?.clearVisualState()
+        activePlayers.remove(playerId)
     }
 
     override fun metricsSnapshot(): HudMetricsSnapshot = metrics.snapshot()
 
     private fun tick() {
         val nowTick = currentTick()
-        val online = Bukkit.getOnlinePlayers()
-        if (online.isEmpty()) return
+        if (activePlayers.isEmpty()) return
 
-        online.forEach { player ->
-            val state = states[player.uniqueId] ?: return@forEach
-            state.process(player, nowTick)
-        }
-
-        cleanupOffline(online.mapTo(hashSetOf()) { it.uniqueId })
-    }
-
-    private fun cleanupOffline(onlineIds: Set<UUID>) {
-        val iterator = states.entries.iterator()
+        val iterator = activePlayers.iterator()
         while (iterator.hasNext()) {
-            val entry = iterator.next()
-            if (entry.key !in onlineIds) {
-                entry.value.clearVisualState()
+            val playerId = iterator.next()
+            val state = states[playerId]
+            if (state == null) {
+                iterator.remove()
+                continue
+            }
+
+            val player = Bukkit.getPlayer(playerId)
+            if (player == null || !player.isOnline) {
+                state.clearVisualState()
+                states.remove(playerId)
+                iterator.remove()
+                continue
+            }
+
+            state.process(player, nowTick)
+            if (state.isIdle()) {
+                states.remove(playerId)
                 iterator.remove()
             }
         }
@@ -216,6 +238,15 @@ private class PlayerHudState(
         processActionBar(player, nowTick)
         processTitle(player, nowTick)
         processScoreboard(player, nowTick)
+    }
+
+    fun isIdle(): Boolean {
+        return activeActionBar == null &&
+            activeTitle == null &&
+            activeScoreboard == null &&
+            actionBarQueue.isEmpty() &&
+            titleQueue.isEmpty() &&
+            scoreboardQueue.isEmpty()
     }
 
     fun cancel(handle: HudHandle): Boolean {
@@ -495,6 +526,8 @@ private class HudQueue<T : QueueEntry>(
     }
 
     fun clear() = queue.clear()
+
+    fun isEmpty(): Boolean = queue.isEmpty()
 }
 
 private enum class OfferResult {
@@ -680,8 +713,7 @@ private object ScoreboardRenderer {
             val entry = ENTRIES[index]
             val score = 15 - index
             objective.getScore(entry).score = score
-            board.getTeam(entry)?.unregister()
-            val team = board.registerNewTeam(entry)
+            val team = getOrCreateTeam(board, entry)
             team.addEntry(entry)
             team.prefix(next)
             state.linesByIndex[index] = next
@@ -697,6 +729,10 @@ private object ScoreboardRenderer {
         val existing = scoreboard.getObjective(OBJECTIVE_NAME)
         if (existing != null) return existing
         return scoreboard.registerNewObjective(OBJECTIVE_NAME, Criteria.DUMMY, title)
+    }
+
+    private fun getOrCreateTeam(scoreboard: org.bukkit.scoreboard.Scoreboard, name: String): org.bukkit.scoreboard.Team {
+        return scoreboard.getTeam(name) ?: scoreboard.registerNewTeam(name)
     }
 }
 

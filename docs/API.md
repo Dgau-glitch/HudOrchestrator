@@ -164,3 +164,11 @@ val snapshot = hud.metricsSnapshot()
 3. Проверить долю reject/drop/preempt.
 4. Подкрутить лимиты в `config.yml`.
 5. Повторить тест до стабильного профиля.
+
+---
+
+## Готовая матрица для ваших плагинов
+
+Для `NoUseItem`, `ArtifactItems`, `QuestCore` подготовлен отдельный production-профиль:
+
+- [`docs/PLUGIN_POLICY_MATRIX.md`](./PLUGIN_POLICY_MATRIX.md)

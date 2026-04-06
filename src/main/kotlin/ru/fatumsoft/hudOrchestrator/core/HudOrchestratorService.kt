@@ -36,7 +36,8 @@ data class ChannelRateLimitConfig(
 data class HudOrchestratorRuntimeConfig(
     val actionBarRateLimit: ChannelRateLimitConfig,
     val titleRateLimit: ChannelRateLimitConfig,
-    val scoreboardRateLimit: ChannelRateLimitConfig
+    val scoreboardRateLimit: ChannelRateLimitConfig,
+    val queueLoggingEnabled: Boolean
 ) {
     fun forChannel(channel: HudChannel): ChannelRateLimitConfig {
         return when (channel) {
@@ -58,6 +59,11 @@ class HudOrchestratorService(
     private var task: BukkitTask? = null
     private val warnedInvalidSources = ConcurrentHashMap.newKeySet<String>()
     private val metrics = HudMetrics()
+
+    private fun queueLog(message: String) {
+        if (!runtimeConfig.queueLoggingEnabled) return
+        plugin.logger.info("[HudQueue] $message")
+    }
 
     fun start() {
         plugin.server.pluginManager.registerEvents(this, plugin)
@@ -107,10 +113,12 @@ class HudOrchestratorService(
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
+            queueLog("DROP channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
             return null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
         return entry.handle
     }
@@ -130,10 +138,12 @@ class HudOrchestratorService(
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
+            queueLog("DROP channel=TITLE player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
             return null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        queueLog("ENQUEUE channel=TITLE player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
         return entry.handle
     }
@@ -153,10 +163,12 @@ class HudOrchestratorService(
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
+            queueLog("DROP channel=SCOREBOARD player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
             return null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        queueLog("ENQUEUE channel=SCOREBOARD player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
         return entry.handle
     }
@@ -216,7 +228,7 @@ class HudOrchestratorService(
     }
 
     private fun playerState(playerId: UUID): PlayerHudState {
-        return states.computeIfAbsent(playerId) { PlayerHudState(runtimeConfig, metrics) }
+        return states.computeIfAbsent(playerId) { PlayerHudState(runtimeConfig, metrics, ::queueLog) }
     }
 
     private fun processPlayerNowIfPossible(playerId: UUID) {
@@ -235,7 +247,10 @@ class HudOrchestratorService(
     private fun isAccepted(playerId: UUID, channel: HudChannel, sourceId: String, cooldownTicks: Int): Boolean {
         val state = playerState(playerId)
         val accepted = state.rateLimiter.accept(channel, sourceId, currentTick(), cooldownTicks)
-        if (!accepted) metrics.rejectedByRateLimit.increment()
+        if (!accepted) {
+            metrics.rejectedByRateLimit.increment()
+            queueLog("REJECT channel=$channel player=$playerId source=$sourceId reason=rate_limit cooldownTicks=$cooldownTicks")
+        }
         return accepted
     }
 
@@ -255,7 +270,8 @@ class HudOrchestratorService(
 
 private class PlayerHudState(
     runtimeConfig: HudOrchestratorRuntimeConfig,
-    private val metrics: HudMetrics
+    private val metrics: HudMetrics,
+    private val queueLog: (String) -> Unit
 ) {
     val actionBarQueue = HudQueue<QueueEntry.ActionBar>(maxSize = 64)
     val titleQueue = HudQueue<QueueEntry.Title>(maxSize = 32)
@@ -380,6 +396,7 @@ private class PlayerHudState(
         if (selected != null && shouldActivate(selected, activeActionBar, nowTick)) {
             activeActionBar = ActiveEntry(selected, nowTick + max(selected.request.meta.minShowTicks.toLong(), 1L), nowTick + max(selected.request.meta.maxShowTicks.toLong(), 1L), nowTick)
             selected.send(player)
+            queueLog("DISPATCH channel=ACTION_BAR player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
         } else {
             val active = activeActionBar ?: return
             val resendEvery = max(active.entry.request.resendIntervalTicks, 1)
@@ -401,6 +418,7 @@ private class PlayerHudState(
             val maxTicks = max(selected.request.meta.maxShowTicks, minTicks + selected.request.fadeOutTicks)
             activeTitle = ActiveEntry(selected, nowTick + minTicks, nowTick + maxTicks, nowTick)
             selected.send(player)
+            queueLog("DISPATCH channel=TITLE player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
         }
     }
 
@@ -427,6 +445,7 @@ private class PlayerHudState(
                     previousScoreboard = player.scoreboard
                 }
                 scoreboardView = ScoreboardRenderer.render(player, selected.request, scoreboardView)
+                queueLog("DISPATCH channel=SCOREBOARD player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
             }
         }
     }

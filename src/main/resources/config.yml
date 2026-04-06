@@ -22,3 +22,8 @@ rate-limit:
   scoreboard:
     capacity: 4.0
     refill-per-second: 1.0
+
+debug:
+  # Logs queue lifecycle events (enqueue/drop/dispatch/reject) to console.
+  # Use for diagnostics only; keep false on peak online to avoid log overhead.
+  queue-logging: false

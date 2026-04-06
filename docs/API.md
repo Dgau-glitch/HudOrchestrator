@@ -103,6 +103,7 @@ HudOrchestrator подписан на `PluginDisableEvent` и автоматич
 - Вызовы API должны выполняться на main thread сервера.
 - Scoreboard рендер ограничен 15 строками.
 - При переполнении очереди слабоприоритетные элементы могут быть вытеснены.
+- Для диагностики очередей доступен debug-флаг `debug.queue-logging` в `config.yml`.
 
 ---
 
@@ -175,3 +176,15 @@ val snapshot = hud.metricsSnapshot()
 Для `NoUseItem`, `ArtifactItems`, `QuestCore` подготовлен отдельный production-профиль:
 
 - [`docs/PLUGIN_POLICY_MATRIX.md`](./PLUGIN_POLICY_MATRIX.md)
+
+---
+
+## Reload команды
+
+Для перезагрузки конфига и сервиса без рестарта сервера:
+
+`/hudorchestrator reload`
+
+Требуемое право:
+
+`hudorchestrator.admin`

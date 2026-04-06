@@ -111,6 +111,7 @@ class HudOrchestratorService(
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        processPlayerNowIfPossible(playerId)
         return entry.handle
     }
 
@@ -133,6 +134,7 @@ class HudOrchestratorService(
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        processPlayerNowIfPossible(playerId)
         return entry.handle
     }
 
@@ -155,6 +157,7 @@ class HudOrchestratorService(
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        processPlayerNowIfPossible(playerId)
         return entry.handle
     }
 
@@ -214,6 +217,19 @@ class HudOrchestratorService(
 
     private fun playerState(playerId: UUID): PlayerHudState {
         return states.computeIfAbsent(playerId) { PlayerHudState(runtimeConfig, metrics) }
+    }
+
+    private fun processPlayerNowIfPossible(playerId: UUID) {
+        if (!Bukkit.isPrimaryThread()) return
+        val player = Bukkit.getPlayer(playerId) ?: return
+        if (!player.isOnline) return
+        val state = states[playerId] ?: return
+        try {
+            state.process(player, currentTick())
+        } catch (t: Throwable) {
+            plugin.logger.severe("HudOrchestrator immediate process failed for player=$playerId: ${t.message}")
+            t.printStackTrace()
+        }
     }
 
     private fun isAccepted(playerId: UUID, channel: HudChannel, sourceId: String, cooldownTicks: Int): Boolean {

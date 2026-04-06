@@ -3,6 +3,14 @@ package ru.fatumsoft.hudOrchestrator.api
 import net.kyori.adventure.text.Component
 import java.util.UUID
 
+/**
+ * Common metadata for all HUD requests.
+ *
+ * [sourceId] should be stable and unique for producer stream, recommended format:
+ * `PluginName[:subsystem]`.
+ *
+ * This allows HudOrchestrator to auto-clean stale requests when a plugin is disabled/reloaded.
+ */
 data class HudRequestMeta(
     val sourceId: String,
     val priority: Int = Priority.NORMAL.weight,
@@ -45,12 +53,39 @@ data class HudHandle(
     val sourceId: String
 )
 
+/**
+ * Public service contract that external plugins can retrieve from Bukkit ServicesManager.
+ *
+ * All methods are expected to be called from the server thread.
+ */
 interface HudOrchestratorApi {
+    /**
+     * Submit action bar message request.
+     *
+     * Returns null when request was rejected by anti-spam limits.
+     */
     fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle?
+
+    /**
+     * Submit title request.
+     *
+     * Returns null when request was rejected by anti-spam limits.
+     */
     fun submitTitle(playerId: UUID, request: TitleRequest): HudHandle?
+
+    /**
+     * Submit scoreboard request.
+     *
+     * Returns null when request was rejected by anti-spam limits.
+     */
     fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle?
 
+    /** Cancel a specific request by handle. */
     fun cancel(handle: HudHandle): Boolean
+
+    /** Cancel queued/active requests for source and optional player/channel scope. */
     fun cancelBySource(sourceId: String, playerId: UUID? = null, channel: HudChannel? = null): Int
+
+    /** Clear all queued/active HUD state for player. */
     fun clearPlayer(playerId: UUID)
 }

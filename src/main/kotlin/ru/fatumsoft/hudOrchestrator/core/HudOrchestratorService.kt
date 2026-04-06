@@ -1,13 +1,15 @@
 package ru.fatumsoft.hudOrchestrator.core
 
 import org.bukkit.Bukkit
+import org.bukkit.event.EventHandler
+import org.bukkit.event.Listener
+import org.bukkit.event.server.PluginDisableEvent
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.scheduler.BukkitTask
 import org.bukkit.scoreboard.Criteria
 import org.bukkit.scoreboard.DisplaySlot
 import org.bukkit.scoreboard.Objective
-import org.bukkit.scoreboard.Scoreboard
 import ru.fatumsoft.hudOrchestrator.api.ActionBarRequest
 import ru.fatumsoft.hudOrchestrator.api.DeliveryPolicy
 import ru.fatumsoft.hudOrchestrator.api.HudChannel
@@ -23,13 +25,14 @@ import kotlin.math.max
 
 class HudOrchestratorService(
     private val plugin: JavaPlugin
-) : HudOrchestratorApi {
+) : HudOrchestratorApi, Listener {
 
     private val states = ConcurrentHashMap<UUID, PlayerHudState>()
     private val sequence = AtomicLong(0L)
     private var task: BukkitTask? = null
 
     fun start() {
+        plugin.server.pluginManager.registerEvents(this, plugin)
         task = Bukkit.getScheduler().runTaskTimer(plugin, Runnable { tick() }, 1L, 1L)
     }
 
@@ -38,6 +41,14 @@ class HudOrchestratorService(
         task = null
         states.values.forEach { it.clearVisualState() }
         states.clear()
+    }
+
+    @EventHandler
+    fun onPluginDisable(event: PluginDisableEvent) {
+        val disabledName = event.plugin.name
+        if (disabledName.equals(plugin.name, ignoreCase = true)) return
+
+        states.values.forEach { it.cancelByPluginName(disabledName) }
     }
 
     override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? {
@@ -197,6 +208,32 @@ private class PlayerHudState {
         return removed
     }
 
+    fun cancelByPluginName(pluginName: String): Int {
+        var removed = 0
+        removed += actionBarQueue.removeBySourcePrefix(pluginName)
+        removed += titleQueue.removeBySourcePrefix(pluginName)
+        removed += scoreboardQueue.removeBySourcePrefix(pluginName)
+
+        if (activeActionBar?.entry?.sourceBelongsToPlugin(pluginName) == true) {
+            activeActionBar = null
+            removed++
+        }
+        if (activeTitle?.entry?.sourceBelongsToPlugin(pluginName) == true) {
+            activeTitle = null
+            removed++
+        }
+        if (activeScoreboard?.entry?.sourceBelongsToPlugin(pluginName) == true) {
+            activeScoreboard = null
+            removed++
+        }
+
+        if (scoreboardOwner != null && sourceBelongsToPlugin(scoreboardOwner!!, pluginName)) {
+            scoreboardOwner = null
+        }
+
+        return removed
+    }
+
     fun clearVisualState() {
         actionBarQueue.clear()
         titleQueue.clear()
@@ -342,6 +379,12 @@ private class HudQueue<T : QueueEntry>(
         return before - queue.size
     }
 
+    fun removeBySourcePrefix(pluginName: String): Int {
+        val before = queue.size
+        queue.removeIf { it.sourceBelongsToPlugin(pluginName) }
+        return before - queue.size
+    }
+
     fun discardExpired(nowTick: Long) {
         queue.removeIf { it.expireTick <= nowTick }
     }
@@ -412,6 +455,7 @@ private sealed class QueueEntry(
     abstract fun send(player: Player)
     fun priority(): Int = requestMeta().priority
     fun sourceId(): String = requestMeta().sourceId
+    fun sourceBelongsToPlugin(pluginName: String): Boolean = sourceBelongsToPlugin(sourceId(), pluginName)
 
     class ActionBar(
         val request: ActionBarRequest,
@@ -491,4 +535,9 @@ private sealed class QueueEntry(
             private const val OBJECTIVE_NAME = "hud_orchestrator"
         }
     }
+}
+
+private fun sourceBelongsToPlugin(sourceId: String, pluginName: String): Boolean {
+    return sourceId.equals(pluginName, ignoreCase = true) ||
+        sourceId.startsWith("$pluginName:", ignoreCase = true)
 }

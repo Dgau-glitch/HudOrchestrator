@@ -1,0 +1,5 @@
+name: HudOrchestrator
+version: '1.0-SNAPSHOT'
+main: ru.fatumsoft.hudOrchestrator.HudOrchestrator
+api-version: '1.21'
+authors: [ Dgau2 ]

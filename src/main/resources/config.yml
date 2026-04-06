@@ -1,10 +1,24 @@
+# HudOrchestrator rate limiting (token bucket) per channel.
+# capacity         - maximum amount of accumulated tokens (burst size).
+# refill-per-second - how many tokens are restored per second.
+#
+# Recommendation:
+# - higher capacity allows short bursts from one source without immediate drops;
+# - higher refill increases sustained throughput;
+# - too high values may cause HUD spam under heavy plugin activity.
+# - too low values may hide important messages.
+#
+# Default profile below is balanced for large online with moderate HUD activity.
 rate-limit:
+  # Action bar is the most frequent channel (cooldowns/progress), so limits are the highest.
   action-bar:
     capacity: 20.0
     refill-per-second: 10.0
+  # Titles are expensive visually and should be rare.
   title:
     capacity: 5.0
     refill-per-second: 2.0
+  # Scoreboard updates should be sparse to avoid unnecessary main-thread churn.
   scoreboard:
     capacity: 4.0
     refill-per-second: 1.0

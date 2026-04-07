@@ -302,6 +302,8 @@ private class PlayerHudState(
     private var activeActionBar: ActiveEntry<QueueEntry.ActionBar>? = null
     private var activeTitle: ActiveEntry<QueueEntry.Title>? = null
     private var activeScoreboard: ActiveEntry<QueueEntry.Scoreboard>? = null
+    private var actionBarStickySource: String? = null
+    private var actionBarStickyUntilTick: Long = 0L
     private var scoreboardOwner: String? = null
     private var scoreboardView: ScoreboardViewState? = null
     private var previousScoreboard: org.bukkit.scoreboard.Scoreboard? = null
@@ -400,6 +402,8 @@ private class PlayerHudState(
         activeActionBar = null
         activeTitle = null
         activeScoreboard = null
+        actionBarStickySource = null
+        actionBarStickyUntilTick = 0L
         scoreboardOwner = null
         scoreboardView = null
         if (player != null && previousScoreboard != null && player.scoreboard != previousScoreboard) {
@@ -413,10 +417,14 @@ private class PlayerHudState(
         val current = activeActionBar
         if (current != null && current.isExpired(nowTick)) activeActionBar = null
 
-        val selected = selectNext(actionBarQueue, activeActionBar, nowTick)
+        val selected = selectActionBarCandidate(nowTick)
         if (selected != null && shouldActivate(selected, activeActionBar, nowTick)) {
             activeActionBar = ActiveEntry(selected, nowTick + max(selected.request.meta.minShowTicks.toLong(), 1L), nowTick + max(selected.request.meta.maxShowTicks.toLong(), 1L), nowTick)
             selected.send(player)
+            if (selected.request.meta.stickinessTicks > 0) {
+                actionBarStickySource = selected.request.meta.sourceId
+                actionBarStickyUntilTick = nowTick + selected.request.meta.stickinessTicks
+            }
             queueLog("DISPATCH channel=ACTION_BAR player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
         } else {
             val active = activeActionBar ?: return
@@ -426,6 +434,22 @@ private class PlayerHudState(
                 active.lastSendTick = nowTick
             }
         }
+    }
+
+    private fun selectActionBarCandidate(nowTick: Long): QueueEntry.ActionBar? {
+        val stickySource = actionBarStickySource
+        val stickyActive = stickySource != null && nowTick < actionBarStickyUntilTick
+        if (stickyActive) {
+            val stickyCandidate = actionBarQueue.bestCandidateBySource(stickySource, nowTick)
+            if (stickyCandidate != null) {
+                actionBarQueue.remove(stickyCandidate.handle.id)
+                return stickyCandidate
+            }
+            // Sticky window is active but no update from owner source yet:
+            // keep channel reserved briefly to avoid one-tick flicker from other queues.
+            if (activeActionBar == null) return null
+        }
+        return selectNext(actionBarQueue, activeActionBar, nowTick)
     }
 
     private fun processTitle(player: Player, nowTick: Long) {
@@ -595,9 +619,18 @@ private class HudQueue<T : QueueEntry>(
     }
 
     fun bestCandidate(nowTick: Long): T? {
+        return bestCandidateInternal(nowTick) { true }
+    }
+
+    fun bestCandidateBySource(sourceId: String, nowTick: Long): T? {
+        return bestCandidateInternal(nowTick) { it.sourceId() == sourceId }
+    }
+
+    private fun bestCandidateInternal(nowTick: Long, predicate: (T) -> Boolean): T? {
         var best: T? = null
         var bestScore = Int.MIN_VALUE
         for (entry in queue) {
+            if (!predicate(entry)) continue
             val wait = (nowTick - entry.createdTick).coerceAtLeast(0)
             val effective = entry.priority() + (wait / 20L).toInt()
             if (effective > bestScore || (effective == bestScore && (best == null || entry.seq < best.seq))) {

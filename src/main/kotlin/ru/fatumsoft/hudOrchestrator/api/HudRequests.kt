@@ -23,7 +23,8 @@ data class HudRequestMeta(
     val ttlTicks: Int = 40,
     val minShowTicks: Int = 10,
     val maxShowTicks: Int = 40,
-    val sourceCooldownTicks: Int = 0
+    val sourceCooldownTicks: Int = 0,
+    val stickinessTicks: Int = 0
 )
 
 data class ActionBarRequest(

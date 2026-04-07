@@ -98,7 +98,8 @@ HudRequestMeta(
     ttlTicks = 30,
     minShowTicks = 10,
     maxShowTicks = 30,
-    sourceCooldownTicks = 2
+    sourceCooldownTicks = 2,
+    stickinessTicks = 6
 )
 ```
 
@@ -115,4 +116,3 @@ HudRequestMeta(
     sourceCooldownTicks = 2
 )
 ```
-

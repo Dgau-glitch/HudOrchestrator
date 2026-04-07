@@ -60,6 +60,7 @@ class HudOrchestratorService(
     private val warnedInvalidSources = ConcurrentHashMap.newKeySet<String>()
     private val metrics = HudMetrics()
     private val queueLogLastTick = ConcurrentHashMap<String, Long>()
+    private val queueLogRepeatCount = ConcurrentHashMap<String, Int>()
 
     private fun queueLog(message: String) {
         if (!runtimeConfig.queueLoggingEnabled) return
@@ -69,10 +70,15 @@ class HudOrchestratorService(
     private fun queueLogThrottled(key: String, minIntervalTicks: Long, message: String) {
         if (!runtimeConfig.queueLoggingEnabled) return
         val now = currentTick()
+        val newCount = (queueLogRepeatCount[key] ?: 0) + 1
+        queueLogRepeatCount[key] = newCount
         val last = queueLogLastTick[key]
         if (last != null && (now - last) < minIntervalTicks) return
+
+        val suffix = if (newCount > 1) " x$newCount" else ""
         queueLogLastTick[key] = now
-        plugin.logger.info("[HudQueue] $message")
+        queueLogRepeatCount[key] = 0
+        plugin.logger.info("[HudQueue] $message$suffix")
     }
 
     fun start() {

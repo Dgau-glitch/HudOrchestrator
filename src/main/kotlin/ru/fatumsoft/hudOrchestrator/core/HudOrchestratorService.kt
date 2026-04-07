@@ -59,9 +59,19 @@ class HudOrchestratorService(
     private var task: BukkitTask? = null
     private val warnedInvalidSources = ConcurrentHashMap.newKeySet<String>()
     private val metrics = HudMetrics()
+    private val queueLogLastTick = ConcurrentHashMap<String, Long>()
 
     private fun queueLog(message: String) {
         if (!runtimeConfig.queueLoggingEnabled) return
+        plugin.logger.info("[HudQueue] $message")
+    }
+
+    private fun queueLogThrottled(key: String, minIntervalTicks: Long, message: String) {
+        if (!runtimeConfig.queueLoggingEnabled) return
+        val now = currentTick()
+        val last = queueLogLastTick[key]
+        if (last != null && (now - last) < minIntervalTicks) return
+        queueLogLastTick[key] = now
         plugin.logger.info("[HudQueue] $message")
     }
 
@@ -249,7 +259,12 @@ class HudOrchestratorService(
         val accepted = state.rateLimiter.accept(channel, sourceId, currentTick(), cooldownTicks)
         if (!accepted) {
             metrics.rejectedByRateLimit.increment()
-            queueLog("REJECT channel=$channel player=$playerId source=$sourceId reason=rate_limit cooldownTicks=$cooldownTicks")
+            val throttleKey = "REJECT:$channel:$playerId:$sourceId:$cooldownTicks"
+            queueLogThrottled(
+                key = throttleKey,
+                minIntervalTicks = 40L,
+                message = "REJECT channel=$channel player=$playerId source=$sourceId reason=rate_limit cooldownTicks=$cooldownTicks"
+            )
         }
         return accepted
     }

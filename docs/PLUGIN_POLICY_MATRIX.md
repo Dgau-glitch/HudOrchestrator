@@ -22,8 +22,8 @@
 
 | Сценарий | Channel | Policy | Priority | ttlTicks | minShowTicks | maxShowTicks | sourceCooldownTicks | dedupKey |
 |---|---|---:|---:|---:|---:|---:|---:|---|
-| Запрет использования предмета / действия | ACTION_BAR | PREEMPT | 70 (HIGH) | 20 | 8 | 20 | 10 | `nouse:blocked-action` |
-| Повторный спам тем же действием | ACTION_BAR | COALESCE | 50 (NORMAL) | 20 | 6 | 20 | 10 | `nouse:blocked-action` |
+| Запрет использования предмета / действия | ACTION_BAR | DROP_IF_BUSY | 30 (LOW) | 20 | 6 | 20 | 10 | `nouse:blocked-action` |
+| Повторный спам тем же действием | ACTION_BAR | DROP_IF_BUSY + COALESCE | 25 | 20 | 6 | 20 | 10 | `nouse:blocked-action` |
 
 Пример `sourceId`:
 - `NoUseItem:restrictions`
@@ -64,11 +64,13 @@
 ## Рекомендации по конфликтам между этими 3 плагинами
 
 1. `QuestCore` completion title всегда выше обычных actionbar-кулдаунов `ArtifactItems`.
-2. `NoUseItem` запрет действия не должен бесконечно прерывать quest-progress:
+2. `NoUseItem` запрет действия должен показываться только когда канал свободен:
+   - использовать `DROP_IF_BUSY`,
+   - держать `LOW` приоритет (25-30),
    - ставить `sourceCooldownTicks >= 10`.
 3. `ArtifactItems` frequent cooldown updates только через `COALESCE`, иначе забьет action bar.
 4. Если одновременно нужен quest/actionbar и artifact/actionbar:
-   - quest progress: `55`, artifact cooldown: `50`, mode switch: `70`.
+   - quest progress: `55`, artifact cooldown: `50`, mode switch: `70`, NoUseItem blocked-action: `30`.
 
 ---
 
@@ -78,11 +80,11 @@
 ```kotlin
 HudRequestMeta(
     sourceId = "NoUseItem:restrictions",
-    priority = 70,
-    policy = DeliveryPolicy.PREEMPT,
+    priority = 30,
+    policy = DeliveryPolicy.DROP_IF_BUSY,
     dedupKey = "nouse:blocked-action",
     ttlTicks = 20,
-    minShowTicks = 8,
+    minShowTicks = 6,
     maxShowTicks = 20,
     sourceCooldownTicks = 10
 )

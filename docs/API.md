@@ -1,269 +1,320 @@
 # HudOrchestrator API
 
-## Назначение
-`HudOrchestrator` предоставляет единый сервис для отправки HUD-контента игрокам:
+Подробное руководство по интеграции с `HudOrchestratorApi` для Paper/Spigot/Purpur серверов.
+
+---
+
+## 1) Что делает сервис
+
+`HudOrchestrator` централизует отправку HUD-контента в 3 канала:
+
 - `ACTION_BAR`
 - `TITLE`
 - `SCOREBOARD`
 
-Сервис доступен через Bukkit `ServicesManager` по интерфейсу:
-`ru.fatumsoft.hudOrchestrator.api.HudOrchestratorApi`.
+Ключевая цель — убрать конфликт между плагинами, контролировать спам и обеспечить предсказуемое поведение под нагрузкой.
 
 ---
 
-## Быстрая интеграция
+## 2) Подключение API
+
+Сервис публикуется через Bukkit `ServicesManager`:
 
 ```kotlin
 val registration = server.servicesManager.getRegistration(HudOrchestratorApi::class.java)
-val hud = registration?.provider ?: return
-
-val handle = hud.submitActionBar(
-    player.uniqueId,
-    ActionBarRequest(
-        content = Component.text("Квест обновлен"),
-        meta = HudRequestMeta(
-            sourceId = "QuestCore:progress",
-            priority = Priority.HIGH.weight,
-            policy = DeliveryPolicy.COALESCE,
-            dedupKey = "quest_progress",
-            ttlTicks = 40,
-            minShowTicks = 10,
-            maxShowTicks = 40,
-            sourceCooldownTicks = 2
-        ),
-        resendIntervalTicks = 10
-    )
-)
+val hud = registration?.provider ?: return // HudOrchestrator не установлен/не активен
 ```
 
-Если вызов идет из async-кода, используйте thread-safe helper:
+### Рекомендация
+Всегда кешируйте `hud` после `onEnable`, но переинициализируйте ссылку после reload/restart внешней зависимости, если ваш плагин поддерживает hot-reload.
+
+---
+
+## 3) Базовые модели API
+
+- `HudChannel` — канал вывода (`ACTION_BAR`, `TITLE`, `SCOREBOARD`).
+- `DeliveryPolicy` — стратегия обработки конфликтов (`ENQUEUE`, `PREEMPT`, `COALESCE`, `DROP_IF_BUSY`).
+- `HudRequestMeta` — метаданные управления очередью/приоритетом/ограничениями.
+- `ActionBarRequest`, `TitleRequest`, `ScoreboardRequest` — payload по каналам.
+- `HudHandle` — хэндл принятого запроса (для отмены/отслеживания).
+
+---
+
+## 4) Полный пример: ActionBar
+
+```kotlin
+val request = ActionBarRequest(
+    content = Component.text("Квест обновлен: 3/10"),
+    meta = HudRequestMeta(
+        sourceId = "QuestCore:progress",
+        priority = Priority.HIGH.weight,
+        policy = DeliveryPolicy.COALESCE,
+        dedupKey = "quest:progress:main_story",
+        replaceGroup = "quest:progress",
+        ttlTicks = 40,
+        minShowTicks = 10,
+        maxShowTicks = 40,
+        sourceCooldownTicks = 2,
+        stickinessTicks = 6
+    ),
+    resendIntervalTicks = 10
+)
+
+val handle = hud.submitActionBar(player.uniqueId, request)
+if (handle == null) {
+    // backpressure: rate-limit / policy drop / overflow
+}
+```
+
+### Когда выбирать такую конфигурацию
+- Частые апдейты прогресса: `COALESCE + dedupKey`.
+- Визуальная стабильность ActionBar стрима: `stickinessTicks` 4–8.
+- Защита от спама источника: `sourceCooldownTicks`.
+
+---
+
+## 5) Полный пример: Title
+
+```kotlin
+val titleRequest = TitleRequest(
+    title = Component.text("Квест завершен!"),
+    subtitle = Component.text("+500 опыта"),
+    fadeInTicks = 10,
+    stayTicks = 40,
+    fadeOutTicks = 10,
+    meta = HudRequestMeta(
+        sourceId = "QuestCore:completion",
+        priority = Priority.CRITICAL.weight,
+        policy = DeliveryPolicy.PREEMPT,
+        dedupKey = "quest:complete:main_story",
+        ttlTicks = 80,
+        minShowTicks = 40,
+        maxShowTicks = 80,
+        sourceCooldownTicks = 10
+    )
+)
+
+hud.submitTitle(player.uniqueId, titleRequest)
+```
+
+### Рекомендации по Title
+- Используйте `PREEMPT` только для реально важных событий.
+- Не задавайте чрезмерный `stayTicks`, чтобы не блокировать канал.
+
+---
+
+## 6) Полный пример: Scoreboard
+
+```kotlin
+val sbRequest = ScoreboardRequest(
+    title = Component.text("§6Артефакт"),
+    lines = listOf(
+        Component.text("§7Режим: §fЛесоруб"),
+        Component.text("§7КД: §f12с"),
+        Component.text("§7Энергия: §f78%")
+    ),
+    ownerMode = true,
+    meta = HudRequestMeta(
+        sourceId = "ArtifactItems:scoreboard",
+        priority = Priority.HIGH.weight,
+        policy = DeliveryPolicy.ENQUEUE,
+        dedupKey = "artifact:sb:owner",
+        ttlTicks = 200,
+        minShowTicks = 40,
+        maxShowTicks = 200,
+        sourceCooldownTicks = 20
+    )
+)
+
+hud.submitScoreboard(player.uniqueId, sbRequest)
+```
+
+### Ограничения Scoreboard
+- До 15 строк отображения.
+- Для постоянного владельца используйте `ownerMode = true`.
+
+---
+
+## 7) Thread-safety и main thread
+
+Прямые `submit*` должны вызываться с main thread. Для async-контекста используйте thread-safe методы:
 
 ```kotlin
 hud.submitActionBarThreadSafe(plugin, player.uniqueId, request)
+hud.submitTitleThreadSafe(plugin, player.uniqueId, titleRequest)
+hud.submitScoreboardThreadSafe(plugin, player.uniqueId, sbRequest)
 ```
 
----
-
-## Модель приоритета и очереди
-
-- Очередь ведется **отдельно по каждому игроку и каналу**.
-- Поддерживаются политики:
-  - `ENQUEUE` — обычная очередь.
-  - `PREEMPT` — вытеснение текущего сообщения при достаточном приоритете.
-  - `COALESCE` — схлопывание по `dedupKey`/`replaceGroup`.
-  - `DROP_IF_BUSY` — удаление запроса, если канал занят.
-- Для предотвращения starvation используется aging (эффективный приоритет растет со временем ожидания).
+### Практика
+Если у вас данные приходят из async (БД, HTTP, Redis), формируйте request в async, а отправку делайте только через `submit*ThreadSafe`.
 
 ---
 
-## Anti-spam / Rate limiting
+## 8) Политики доставки (DeliveryPolicy)
 
-На каждого игрока и источник (`sourceId`) применяется ограничение:
-- token bucket (ёмкость + пополнение),
-- optional cooldown (`sourceCooldownTicks`).
+### `ENQUEUE`
+Стандартная очередь.
 
-Если лимит превышен, `submit*` вернет `null`.
+Используйте, когда важно показать все сообщения по порядку (но не слишком часто).
 
-Лимиты настраиваются в `config.yml` по каналам:
-- `rate-limit.action-bar`
-- `rate-limit.title`
-- `rate-limit.scoreboard`
+### `PREEMPT`
+Вытесняет текущее сообщение при достаточном приоритете.
+
+Используйте только для критичных событий (fail/error/important alert).
+
+### `COALESCE`
+Схлопывает одинаковые/родственные апдейты по `dedupKey`/`replaceGroup`.
+
+Лучший выбор для таймеров, прогресса, кулдаунов.
+
+### `DROP_IF_BUSY`
+Отбрасывает сообщение, если канал занят.
+
+Подходит для второстепенных уведомлений, которые не должны мешать важным.
 
 ---
 
-## Рекомендации по `sourceId`
+## 9) Приоритеты и anti-starvation
 
-Используйте стабильные значения в формате:
+- Приоритет задаётся числом (`Int`) через `meta.priority`.
+- Сервис использует aging-механику: долгоживущие элементы постепенно повышают эффективный приоритет.
+
+Рекомендуемый диапазон:
+- `LOW`: 20–35
+- `NORMAL`: 45–60
+- `HIGH`: 65–80
+- `CRITICAL`: 85+
+
+---
+
+## 10) Rate-limit и backpressure
+
+На каждого игрока и `sourceId` применяется лимит:
+- token bucket (`capacity`, `refill-per-second`)
+- optional cooldown (`sourceCooldownTicks`)
+
+Если лимит/политика не позволяют принять сообщение — `submit*` вернёт `null`.
+
+### Как реагировать на `null`
+1. Уменьшить частоту генерации.
+2. Перейти на `COALESCE`.
+3. Увеличить `sourceCooldownTicks`.
+4. Проверить лимиты в `config.yml`.
+
+---
+
+## 11) Стандарты `sourceId` (очень важно)
+
+Используйте стабильные идентификаторы:
 - `PluginName`
 - `PluginName:subsystem`
 
 Примеры:
-- `QuestCore:progress`
+- `NoUseItem:restrictions`
 - `ArtifactItems:totem-cooldown`
-- `NoUseItem`
+- `QuestCore:progress`
 
-Это важно для корректной очистки при перезагрузке/выключении плагинов.
-
----
-
-## Поведение при reload / disable внешних плагинов
-
-HudOrchestrator подписан на `PluginDisableEvent` и автоматически очищает queued/active элементы для отключаемого плагина, если его `sourceId`:
-- равен имени плагина, или
-- начинается с `PluginName:`.
-
-Это предотвращает зависшие HUD-сообщения и «мертвого владельца» scoreboard после `/reload`, PlugMan-like reload или ручного disable/enable.
-
-При очистке состояния HudOrchestrator также пытается восстановить предыдущий scoreboard игрока, если текущий был установлен оркестратором.
+Почему это важно:
+- корректная очистка при disable/reload плагина,
+- понятная диагностика,
+- предсказуемое применение rate-limit.
 
 ---
 
-## Ограничения
+## 12) Cleanup на disable/reload
 
-- Вызовы API должны выполняться на main thread сервера.
-- Scoreboard рендер ограничен 15 строками.
-- При переполнении очереди слабоприоритетные элементы могут быть вытеснены.
-- Для диагностики очередей доступен debug-флаг `debug.queue-logging` в `config.yml`.
-- Повторяющиеся REJECT-логи агрегируются и выводятся с суффиксом `xN` (например, `x4`) для быстрого выявления спама.
-- Для борьбы с «миганием» actionbar при частых апдейтах одного источника используйте `stickinessTicks` в `HudRequestMeta`.
+При `PluginDisableEvent` оркестратор очищает queued/active элементы плагина, если `sourceId`:
+- равен имени плагина,
+- или начинается с `PluginName:`.
+
+Для scoreboard также выполняется попытка восстановить предыдущий scoreboard игрока.
 
 ---
 
-## Метрики
-
-Доступен срез метрик через API:
+## 13) Метрики и наблюдаемость
 
 ```kotlin
 val snapshot = hud.metricsSnapshot()
+logger.info("submitted=${snapshot.submitted}, rejected=${snapshot.rejectedByRateLimit}")
 ```
 
-Поля snapshot:
-- submitted
-- rejectedByRateLimit
-- droppedByPolicy
-- replacedByCoalesce
-- queueOverflowDropped
-- preemptions
+Доступные счётчики:
+- `submitted`
+- `rejectedByRateLimit`
+- `droppedByPolicy`
+- `replacedByCoalesce`
+- `queueOverflowDropped`
+- `preemptions`
 
----
-
-## Production playbook (SLO-тюнинг)
-
-### 1) Async-интеграция (обязательно)
-
-- Если событие/обработчик работает не на main thread, вызывайте только:
-  - `submitActionBarThreadSafe(...)`
-  - `submitTitleThreadSafe(...)`
-  - `submitScoreboardThreadSafe(...)`
-- Прямые `submit*` используйте только на main thread.
-- Если `submit*` вернул `null`, запрос был отклонён rate-limit/переполнением очереди — это не ошибка API, а сигнал backpressure.
-
-### 2) Базовые SLO для HUD
-
-Рекомендуемые ориентиры для большого онлайна:
-- `rejectedByRateLimit / submitted < 5%` в среднем.
+### Базовые production SLO
+- `rejectedByRateLimit / submitted < 5%` (среднее окно).
 - `queueOverflowDropped == 0` на нормальной нагрузке.
-- `droppedByPolicy` допустим только для намеренных `DROP_IF_BUSY` сценариев.
-- `preemptions` не должен расти линейно с онлайном (признак конфликтов приоритетов).
-
-### 3) Тюнинг rate-limit по каналам
-
-Тюнинг выполняется через `config.yml`:
-- `rate-limit.action-bar` — обычно самый “шумный” канал.
-- `rate-limit.title` — ограничивайте строже, чтобы не мигал экран.
-- `rate-limit.scoreboard` — обновления реже, но стабильнее.
-
-Правило:
-- если растет `rejectedByRateLimit` и теряются важные сообщения → увеличивайте `capacity`/`refill-per-second`;
-- если растет визуальный спам → уменьшайте `refill-per-second` и/или повышайте `sourceCooldownTicks` в запросах.
-
-### 4) Приоритеты и политики
-
-- Критичные сообщения (`CRITICAL`/`HIGH`) отправляйте с `PREEMPT` только при реальной необходимости.
-- Частые прогресс-обновления используйте через `COALESCE` + `dedupKey`.
-- Декоративные/маловажные события — `DROP_IF_BUSY`.
-
-### 5) Рекомендуемый operational цикл
-
-1. Снять baseline метрик на обычном онлайне.
-2. Провести пиковый сценарий (ивент/вайп/массовая активность).
-3. Проверить долю reject/drop/preempt.
-4. Подкрутить лимиты в `config.yml`.
-5. Повторить тест до стабильного профиля.
+- `preemptions` не должны линейно расти с онлайном.
 
 ---
 
-## Готовая матрица для ваших плагинов
+## 14) Практические профили интеграции
 
-Для `NoUseItem`, `ArtifactItems`, `QuestCore` подготовлен отдельный production-профиль:
+### A) Частый прогресс (квесты)
+- `COALESCE`
+- `priority` 50–60
+- `sourceCooldownTicks` 1–3
+- `stickinessTicks` 4–8
 
-- [`docs/PLUGIN_POLICY_MATRIX.md`](./PLUGIN_POLICY_MATRIX.md)
+### B) Ошибка/запрет действия
+- `DROP_IF_BUSY` или `PREEMPT` (только если действительно критично)
+- `priority` 30 для мягких, 80+ для критичных
 
----
-
-## Reload команды
-
-Для перезагрузки конфига и сервиса без рестарта сервера:
-
-`/hudorchestrator reload`
-
-Требуемое право:
-
-`hudorchestrator.admin`
-
----
-
-## Практический integration checklist (рекомендуется)
-
-Перед запуском на прод:
-
-1. Получай `HudOrchestratorApi` через `ServicesManager` и проверяй `null`-случай.
-2. Используй стабильный `sourceId` в формате `PluginName:subsystem`.
-3. Для частых обновлений (таймеры/кулдауны/прогресс) всегда ставь:
-   - `policy = COALESCE`
-   - `dedupKey`
-4. Для второстепенных уведомлений используй `DROP_IF_BUSY`.
-5. Для критичных событий (ошибка/фейл/блок) используй `PREEMPT`, но дозированно.
-6. Из async-кода отправляй только через `submit*ThreadSafe`.
-7. Обрабатывай `submit* == null` как backpressure (уменьшай частоту, повышай cooldown, coalesce).
-8. Для ActionBar-стримов одного источника используй `stickinessTicks` (обычно 4–8).
+### C) Смена режима (артефакты)
+- `PREEMPT`
+- `priority` 70+
+- короткий TTL (20–40)
 
 ---
 
-## Рекомендуемые профили по каналам
+## 15) Диагностика проблем
 
-### ActionBar
-- Частота: высокая.
-- Типичные policy: `COALESCE`, реже `DROP_IF_BUSY`.
-- `sourceCooldownTicks`: 1–4 для таймеров, 6–12 для предупреждений.
-- `stickinessTicks`: 4–8, если есть риск однокадрового “вклинивания”.
+Если сообщения не видны / мигают / конфликтуют:
 
-### Title
-- Частота: низкая.
-- Типичные policy: `PREEMPT` только для действительно важных событий.
-- Не злоупотребляй длинными `stayTicks`, чтобы не блокировать полезные title.
-
-### Scoreboard
-- Частота: низкая/средняя.
-- Предпочтительно обновлять только при изменении данных.
-- Для постоянного владельца использовать `ownerMode=true`.
+1. Включите `debug.queue-logging: true`.
+2. Проверьте, что стримы используют `COALESCE`.
+3. Проверьте приоритеты (нет ли агрессивного `PREEMPT`).
+4. Проверьте лимиты `rate-limit.*`.
+5. Для ActionBar потока включите `stickinessTicks`.
+6. После диагностики выключите debug-лог в проде.
 
 ---
 
-## Анти-паттерны (чего избегать)
+## 16) Команда управления
 
-- Отправка одного и того же HUD-сообщения каждый тик без `COALESCE`.
-- `PREEMPT` для всех сообщений подряд (ломает UX других плагинов).
-- Случайные `sourceId` (UUID/временные строки), которые ломают cleanup и диагностику.
-- Игнорирование `null` от `submit*`.
-- Вызовы прямых `submit*` из async-потоков.
+Перезагрузка конфигурации и сервиса:
 
----
+```text
+/hudorchestrator reload
+```
 
-## Диагностика проблем в бою
+Permission:
 
-Если HUD “пропадает” или “мигает”:
-
-1. Включи `debug.queue-logging: true`.
-2. Проверь типы сообщений:
-   - много `REJECT` => слишком агрессивная частота/малые лимиты;
-   - много `DROP` => переполнение/неправильный приоритет;
-   - много `PREEMPT` => слишком конфликтная матрица важности.
-3. Проверь, что интегратор использует правильные policy (`COALESCE` для стримов).
-4. Для ActionBar включи `stickinessTicks`.
-5. После настройки выключи debug-логирование на проде.
+```text
+hudorchestrator.admin
+```
 
 ---
 
-## Минимальный контракт для интеграторов (рекомендация)
+## 17) Integration checklist
 
-Для каждого HUD-сценария зафиксируй:
-- `sourceId`
-- `policy`
-- `priority`
-- `ttlTicks`
-- `sourceCooldownTicks`
-- `dedupKey` (если `COALESCE`)
-- `stickinessTicks` (для ActionBar-стримов)
+Перед выкладкой:
 
-Это сильно снижает шанс конфликтов при росте онлайна и упрощает поддержку.
+1. Проверить получение API через `ServicesManager`.
+2. Зафиксировать `sourceId` для каждого сценария.
+3. Для частых апдейтов использовать `COALESCE + dedupKey`.
+4. Для вторичных сообщений использовать `DROP_IF_BUSY`.
+5. Из async использовать только `submit*ThreadSafe`.
+6. Обрабатывать `null` как штатный backpressure.
+7. Проверить метрики под пиковым онлайном.
+
+---
+
+## 18) Связанные документы
+
+- Матрица готовых профилей: [`docs/PLUGIN_POLICY_MATRIX.md`](./PLUGIN_POLICY_MATRIX.md)

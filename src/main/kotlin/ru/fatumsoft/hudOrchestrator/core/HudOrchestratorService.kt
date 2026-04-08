@@ -445,9 +445,9 @@ private class PlayerHudState(
                 actionBarQueue.remove(stickyCandidate.handle.id)
                 return stickyCandidate
             }
-            // Sticky window is active but no update from owner source yet:
-            // keep channel reserved briefly to avoid one-tick flicker from other queues.
-            if (activeActionBar == null) return null
+            // Sticky window is active but owner source has no pending update.
+            // Do not keep channel empty/reserved, otherwise low-priority fallback
+            // messages (e.g. NoUseItem) may starve even when they are the only queue entry.
         }
         return selectNext(actionBarQueue, activeActionBar, nowTick)
     }

@@ -1,94 +1,84 @@
-# HudOrchestrator Policy Matrix (Production)
+# HudOrchestrator Policy Matrix (ArtifactItems / QuestCore / noUseItem)
 
-Детальная матрица для согласованной работы плагинов:
+Цель: закрепить предсказуемое поведение очереди по вашему правилу приоритетов.
 
-- `NoUseItem`
-- `ArtifactItems`
-- `QuestCore`
+## 1) Бизнес-приоритеты (по вашему ТЗ)
 
-Документ ориентирован на высокий онлайн и минимизацию HUD-конфликтов.
+Чем **ближе к 1**, тем **важнее**:
 
----
+1. `QuestCore` — приоритет **1** (самый высокий)
+2. `ArtifactItems` — приоритет **2**
+3. `noUseItem` — приоритет **4** (самый низкий)
 
-## 1) Единые правила интеграции
+Для `HudRequestMeta.priority` (где больше число = выше приоритет) используйте отображение:
 
-1. Используйте стабильные `sourceId` формата `PluginName:subsystem`.
-2. Для частых обновлений применяйте `COALESCE + dedupKey`.
-3. `PREEMPT` — только для действительно критичных ситуаций.
-4. Декоративные/вторичные уведомления — `DROP_IF_BUSY`.
-5. Не отправляйте одинаковые сообщения каждый тик без coalesce.
+- `QuestCore` → `90`
+- `ArtifactItems` → `75`
+- `noUseItem` → `25`
 
----
+## 2) Ключевые правила поведения очереди
 
-## 2) Приоритетная шкала (рекомендуемая)
+### Правило A: QuestCore всегда сверху
+- Все важные сценарии `QuestCore` отправлять с `PREEMPT` и приоритетом `90`.
+- Для непрерывных потоков `QuestCore` использовать `COALESCE + stickinessTicks` (6–10), чтобы другие не «вклинивались» и не вызывали мигание.
 
-- **LOW**: 20–35
-- **NORMAL**: 45–60
-- **HIGH**: 65–80
-- **CRITICAL**: 85+
+### Правило B: ArtifactItems выше noUseItem
+- Основной поток `ArtifactItems` — приоритет `75`.
+- Для режима/критических событий — `PREEMPT`.
+- Для частых апдейтов — `COALESCE`, чтобы не забивать канал.
 
-Важно: числа ниже — рекомендации, не жёсткий контракт.
+### Правило C: noUseItem только когда канал свободен
+- Использовать только `DROP_IF_BUSY`.
+- Приоритет `25`.
+- Никакого `PREEMPT` для `noUseItem`.
 
----
+## 3) Рекомендованная матрица (ActionBar)
 
-## 3) NoUseItem
+| Плагин | Сценарий | Policy | Priority | stickinessTicks | dedupKey |
+|---|---|---|---:|---:|---|
+| QuestCore | Прогресс/статус квеста | COALESCE | 90 | 8 | `quest:progress:<questId>` |
+| QuestCore | Чекпоинт/важный этап | PREEMPT | 90 | 8 | `quest:checkpoint:<questId>` |
+| ArtifactItems | Кулдаун артефакта | COALESCE | 75 | 6 | `artifact:cooldown:<artifactId>` |
+| ArtifactItems | Смена режима/крит. событие | PREEMPT | 75 | 6 | `artifact:mode:<artifactId>` |
+| noUseItem | Запрет действия | DROP_IF_BUSY | 25 | 0 | `nouse:blocked-action` |
 
-### Основные сценарии
+## 4) TITLE и SCOREBOARD
 
-| Сценарий | Channel | Policy | Priority | ttlTicks | minShowTicks | maxShowTicks | sourceCooldownTicks | dedupKey |
-|---|---|---|---:|---:|---:|---:|---:|---|
-| Запрет действия/использования | ACTION_BAR | DROP_IF_BUSY | 30 | 30 | 8 | 30 | 2 | `nouse:blocked-action` |
-| Повторный триггер того же запрета | ACTION_BAR | COALESCE | 30 | 30 | 8 | 30 | 2 | `nouse:blocked-action` |
+### TITLE
+- `QuestCore` completion/title: `PREEMPT`, `priority=90`.
+- `ArtifactItems` title (если используется): `PREEMPT`, `priority=75`.
+- `noUseItem` в `TITLE` не использовать.
 
-### `sourceId`
-- `NoUseItem:restrictions`
+### SCOREBOARD
+- Постоянный владелец scoreboard: `ArtifactItems` (`ownerMode=true`, `priority=75`).
+- Временные критичные scoreboard-события `QuestCore`: `PREEMPT`, `priority=90`.
 
-### Пример
+## 5) Готовые примеры метаданных
 
+### QuestCore (без мигания, всегда сверху)
 ```kotlin
 HudRequestMeta(
-    sourceId = "NoUseItem:restrictions",
-    priority = 30,
-    policy = DeliveryPolicy.DROP_IF_BUSY,
-    dedupKey = "nouse:blocked-action",
+    sourceId = "QuestCore:progress",
+    priority = 90,
+    policy = DeliveryPolicy.COALESCE,
+    dedupKey = "quest:progress:<questId>",
+    replaceGroup = "quest:progress",
     ttlTicks = 30,
-    minShowTicks = 8,
+    minShowTicks = 10,
     maxShowTicks = 30,
-    sourceCooldownTicks = 2
+    sourceCooldownTicks = 2,
+    stickinessTicks = 8
 )
 ```
 
-### Почему так
-- Сообщение полезно, но не должно «перебивать» важный HUD от квестов/артефактов.
-- `DROP_IF_BUSY` и low-priority защищают UX от визуального хаоса.
-
----
-
-## 4) ArtifactItems
-
-### Основные сценарии
-
-| Сценарий | Channel | Policy | Priority | ttlTicks | minShowTicks | maxShowTicks | sourceCooldownTicks | dedupKey |
-|---|---|---|---:|---:|---:|---:|---:|---|
-| Кулдаун артефакта (частый поток) | ACTION_BAR | COALESCE | 50 | 30 | 10 | 30 | 2 | `artifact:cooldown:<artifactId>` |
-| Смена режима артефакта | ACTION_BAR | PREEMPT | 70 | 36 | 12 | 36 | 6 | `artifact:mode:<artifactId>` |
-| Критичный отказ использования | ACTION_BAR | PREEMPT | 80 | 25 | 10 | 25 | 8 | `artifact:critical:<reason>` |
-| Временный overlay scoreboard | SCOREBOARD | PREEMPT | 70 | 100 | 20 | 100 | 20 | `artifact:sb:overlay` |
-| Постоянный owner scoreboard | SCOREBOARD | ENQUEUE | 55 | 200 | 40 | 200 | 20 | `artifact:sb:owner` |
-
-### `sourceId`
-- `ArtifactItems:totem-cooldown`
-- `ArtifactItems:lumber-mode`
-- `ArtifactItems:scoreboard`
-
-### Пример: cooldown поток
-
+### ArtifactItems (выше noUseItem)
 ```kotlin
 HudRequestMeta(
     sourceId = "ArtifactItems:totem-cooldown",
-    priority = 50,
+    priority = 75,
     policy = DeliveryPolicy.COALESCE,
     dedupKey = "artifact:cooldown:totem",
+    replaceGroup = "artifact:cooldown",
     ttlTicks = 30,
     minShowTicks = 10,
     maxShowTicks = 30,
@@ -97,163 +87,30 @@ HudRequestMeta(
 )
 ```
 
-### Почему так
-- Частый апдейт кулдауна без `COALESCE` быстро забивает ActionBar.
-- `stickinessTicks` снижает однокадровые вклинивания чужих сообщений.
-
----
-
-## 5) QuestCore
-
-### Основные сценарии
-
-| Сценарий | Channel | Policy | Priority | ttlTicks | minShowTicks | maxShowTicks | sourceCooldownTicks | dedupKey |
-|---|---|---|---:|---:|---:|---:|---:|---|
-| Прогресс цели квеста | ACTION_BAR | COALESCE | 55 | 30 | 10 | 30 | 2 | `quest:progress:<questId>` |
-| Важный этап/чекпоинт | ACTION_BAR | PREEMPT | 70 | 25 | 10 | 25 | 6 | `quest:checkpoint:<questId>` |
-| Завершение квеста | TITLE | PREEMPT | 85 | 80 | 40 | 80 | 10 | `quest:complete:<questId>` |
-
-### `sourceId`
-- `QuestCore:progress`
-- `QuestCore:checkpoint`
-- `QuestCore:completion`
-
-### Пример: completion title
-
+### noUseItem (только если очередь свободна)
 ```kotlin
 HudRequestMeta(
-    sourceId = "QuestCore:completion",
-    priority = 85,
-    policy = DeliveryPolicy.PREEMPT,
-    dedupKey = "quest:complete:main_story",
-    ttlTicks = 80,
-    minShowTicks = 40,
-    maxShowTicks = 80,
-    sourceCooldownTicks = 10
+    sourceId = "noUseItem:restrictions",
+    priority = 25,
+    policy = DeliveryPolicy.DROP_IF_BUSY,
+    dedupKey = "nouse:blocked-action",
+    replaceGroup = "nouse:block",
+    ttlTicks = 24,
+    minShowTicks = 8,
+    maxShowTicks = 24,
+    sourceCooldownTicks = 2
 )
 ```
 
-### Почему так
-- Завершение квеста — событие высокого приоритета, может временно вытеснить менее важный HUD.
+## 6) Чек-лист интеграции
 
----
+1. Все `QuestCore`-потоки проверить на `priority=90`.
+2. Все `ArtifactItems`-потоки проверить на `priority=75`.
+3. Все `noUseItem`-потоки перевести на `DROP_IF_BUSY` + `priority=25`.
+4. Для частых потоков (Quest/Artifact) включить `COALESCE`.
+5. Для потоков, где важна стабильность, включить `stickinessTicks`.
+6. Проверить в метриках, что `noUseItem` чаще всего дропается при занятости — это ожидаемое поведение по ТЗ.
 
-## 6) Межплагинные конфликты и порядок важности
+## 7) Связанный документ
 
-Рекомендуемый порядок в типичной RPG-сборке:
-
-1. `QuestCore` completion TITLE (`85`) — самое важное пользовательское событие.
-2. `ArtifactItems` mode switch/fail (`70–80`) — важно для моментального feedback.
-3. `QuestCore` progress (`55`) и `ArtifactItems` cooldown (`50`) — рабочий фон.
-4. `NoUseItem` blocked-action (`30`) — вторичный сигнал, не должен доминировать.
-
----
-
-## 7) Рекомендуемые `replaceGroup`
-
-Используйте `replaceGroup` для логически родственных потоков:
-
-- `quest:progress`
-- `artifact:cooldown`
-- `artifact:mode`
-- `nouse:block`
-
-Это упрощает coalesce/замещение и сокращает шум очередей.
-
----
-
-## 8) Готовые шаблоны (копипаст)
-
-### NoUseItem: blocked action
-
-```kotlin
-ActionBarRequest(
-    content = Component.text("Этот предмет сейчас использовать нельзя"),
-    meta = HudRequestMeta(
-        sourceId = "NoUseItem:restrictions",
-        priority = 30,
-        policy = DeliveryPolicy.DROP_IF_BUSY,
-        dedupKey = "nouse:blocked-action",
-        replaceGroup = "nouse:block",
-        ttlTicks = 30,
-        minShowTicks = 8,
-        maxShowTicks = 30,
-        sourceCooldownTicks = 2
-    )
-)
-```
-
-### ArtifactItems: cooldown
-
-```kotlin
-ActionBarRequest(
-    content = Component.text("Тотем: 12с"),
-    meta = HudRequestMeta(
-        sourceId = "ArtifactItems:totem-cooldown",
-        priority = 50,
-        policy = DeliveryPolicy.COALESCE,
-        dedupKey = "artifact:cooldown:totem",
-        replaceGroup = "artifact:cooldown",
-        ttlTicks = 30,
-        minShowTicks = 10,
-        maxShowTicks = 30,
-        sourceCooldownTicks = 2,
-        stickinessTicks = 6
-    ),
-    resendIntervalTicks = 10
-)
-```
-
-### QuestCore: progress
-
-```kotlin
-ActionBarRequest(
-    content = Component.text("Квест: 3/10"),
-    meta = HudRequestMeta(
-        sourceId = "QuestCore:progress",
-        priority = 55,
-        policy = DeliveryPolicy.COALESCE,
-        dedupKey = "quest:progress:main_story",
-        replaceGroup = "quest:progress",
-        ttlTicks = 30,
-        minShowTicks = 10,
-        maxShowTicks = 30,
-        sourceCooldownTicks = 2,
-        stickinessTicks = 6
-    ),
-    resendIntervalTicks = 10
-)
-```
-
----
-
-## 9) Таблица anti-patterns
-
-| Анти-паттерн | Почему плохо | Как правильно |
-|---|---|---|
-| `PREEMPT` почти везде | постоянное вытеснение и «дребезг» HUD | оставить `PREEMPT` только для high/critical |
-| случайные `sourceId` (UUID/timestamp) | невозможно clean-up и адекватный rate-limit | стабильный `PluginName:subsystem` |
-| апдейты каждый тик без coalesce | рост очереди/отказы/мигание | `COALESCE + dedupKey` |
-| игнор `null` из `submit*` | потерянные сообщения без контроля | считать `null` сигналом backpressure |
-
----
-
-## 10) Валидация перед релизом
-
-### Техническая
-1. Проверить, что каждый сценарий имеет фиксированный `sourceId`.
-2. Проверить, что frequent-потоки используют `COALESCE`.
-3. Проверить, что есть fallback-политика для вторичных сообщений.
-4. Проверить, что async-источники используют `submit*ThreadSafe`.
-
-### Нагрузочная
-1. Прогнать synthetic burst (массовые квест апдейты + cooldown + deny).
-2. Снять `metricsSnapshot()` до/после.
-3. Добиться `queueOverflowDropped == 0` на нормальном профиле.
-4. Убедиться, что `rejectedByRateLimit` в ожидаемом диапазоне.
-
----
-
-## 11) Связанные документы
-
-- Полное API-руководство: [`docs/API.md`](./API.md)
+- API и базовые примеры: [`docs/API.md`](./API.md)

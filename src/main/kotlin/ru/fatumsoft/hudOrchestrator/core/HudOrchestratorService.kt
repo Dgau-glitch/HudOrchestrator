@@ -125,7 +125,6 @@ class HudOrchestratorService(
 
     override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? = runOnPrimaryThread("submitActionBar") {
         validateSourceId(request.meta.sourceId)
-        if (!isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val nowTick = currentTick()
         val entry = QueueEntry.ActionBar(
             request = request,
@@ -134,7 +133,10 @@ class HudOrchestratorService(
             expireTick = nowTick + max(request.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        val result = playerState(playerId).actionBarQueue.offer(entry)
+        val state = playerState(playerId)
+        val bypassRateLimit = state.actionBarQueue.hasPendingCoalesceTarget(entry)
+        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
+        val result = state.actionBarQueue.offer(entry)
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
@@ -150,7 +152,6 @@ class HudOrchestratorService(
 
     override fun submitTitle(playerId: UUID, request: TitleRequest): HudHandle? = runOnPrimaryThread("submitTitle") {
         validateSourceId(request.meta.sourceId)
-        if (!isAccepted(playerId, HudChannel.TITLE, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val nowTick = currentTick()
         val entry = QueueEntry.Title(
             request = request,
@@ -159,7 +160,10 @@ class HudOrchestratorService(
             expireTick = nowTick + max(request.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        val result = playerState(playerId).titleQueue.offer(entry)
+        val state = playerState(playerId)
+        val bypassRateLimit = state.titleQueue.hasPendingCoalesceTarget(entry)
+        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.TITLE, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
+        val result = state.titleQueue.offer(entry)
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
@@ -175,7 +179,6 @@ class HudOrchestratorService(
 
     override fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle? = runOnPrimaryThread("submitScoreboard") {
         validateSourceId(request.meta.sourceId)
-        if (!isAccepted(playerId, HudChannel.SCOREBOARD, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val nowTick = currentTick()
         val entry = QueueEntry.Scoreboard(
             request = request,
@@ -184,7 +187,10 @@ class HudOrchestratorService(
             expireTick = nowTick + max(request.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        val result = playerState(playerId).scoreboardQueue.offer(entry)
+        val state = playerState(playerId)
+        val bypassRateLimit = state.scoreboardQueue.hasPendingCoalesceTarget(entry)
+        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.SCOREBOARD, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
+        val result = state.scoreboardQueue.offer(entry)
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
@@ -556,6 +562,13 @@ private class HudQueue<T : QueueEntry>(
     private val maxSize: Int
 ) {
     private val queue = ArrayList<T>(maxSize)
+
+    fun hasPendingCoalesceTarget(entry: T): Boolean {
+        val meta = entry.requestMeta()
+        if (meta.policy != DeliveryPolicy.COALESCE) return false
+        val replaceBy = meta.dedupKey ?: meta.replaceGroup ?: return false
+        return queue.any { it.sourceId() == entry.sourceId() && (it.requestMeta().dedupKey == replaceBy || it.requestMeta().replaceGroup == replaceBy) }
+    }
 
     fun offer(entry: T): OfferResult {
         val meta = entry.requestMeta()

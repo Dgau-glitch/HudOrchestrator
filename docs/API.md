@@ -137,12 +137,44 @@ hud.submitScoreboard(player.uniqueId, sbRequest)
 
 ## 7) Thread-safety и main thread
 
-Прямые `submit*` должны вызываться с main thread. Для async-контекста используйте thread-safe методы:
+Начиная с актуальной версии сервиса, `submitActionBar/submitTitle/submitScoreboard` безопасно вызываются даже из async-контекста: оркестратор автоматически выполняет их на main thread.
+
+Тем не менее, для явной и читаемой интеграции рекомендуется использовать thread-safe методы-обёртки:
 
 ```kotlin
 hud.submitActionBarThreadSafe(plugin, player.uniqueId, request)
 hud.submitTitleThreadSafe(plugin, player.uniqueId, titleRequest)
 hud.submitScoreboardThreadSafe(plugin, player.uniqueId, sbRequest)
+```
+
+
+### Пример: async источник (БД/HTTP) с обработкой результата
+
+```kotlin
+plugin.server.scheduler.runTaskAsynchronously(plugin, Runnable {
+    val response = loadQuestStateFromStorage(player.uniqueId)
+
+    val request = TitleRequest(
+        title = Component.text("Новая цель"),
+        subtitle = Component.text(response.targetName),
+        meta = HudRequestMeta(
+            sourceId = "QuestCore:async-sync",
+            priority = Priority.HIGH.weight,
+            policy = DeliveryPolicy.COALESCE,
+            dedupKey = "quest:async:${response.questId}",
+            ttlTicks = 60,
+            minShowTicks = 20,
+            maxShowTicks = 60
+        )
+    )
+
+    hud.submitTitleThreadSafe(plugin, player.uniqueId, request)
+        .thenAccept { handle ->
+            if (handle == null) {
+                plugin.logger.fine("HudOrchestrator backpressure for ${player.uniqueId}")
+            }
+        }
+})
 ```
 
 ### Практика

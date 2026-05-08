@@ -114,9 +114,18 @@ class HudOrchestratorService(
         clearPlayer(event.player.uniqueId)
     }
 
-    override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? {
+    private fun <T> runOnPrimaryThread(actionName: String, block: () -> T): T {
+        if (Bukkit.isPrimaryThread()) return block()
+        return try {
+            Bukkit.getScheduler().callSyncMethod(plugin) { block() }.get()
+        } catch (ex: Exception) {
+            throw IllegalStateException("$actionName must run on server main thread", ex)
+        }
+    }
+
+    override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? = runOnPrimaryThread("submitActionBar") {
         validateSourceId(request.meta.sourceId)
-        if (!isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) return null
+        if (!isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val nowTick = currentTick()
         val entry = QueueEntry.ActionBar(
             request = request,
@@ -130,18 +139,18 @@ class HudOrchestratorService(
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
             queueLog("DROP channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
-            return null
+            return@runOnPrimaryThread null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
-        return entry.handle
+        return@runOnPrimaryThread entry.handle
     }
 
-    override fun submitTitle(playerId: UUID, request: TitleRequest): HudHandle? {
+    override fun submitTitle(playerId: UUID, request: TitleRequest): HudHandle? = runOnPrimaryThread("submitTitle") {
         validateSourceId(request.meta.sourceId)
-        if (!isAccepted(playerId, HudChannel.TITLE, request.meta.sourceId, request.meta.sourceCooldownTicks)) return null
+        if (!isAccepted(playerId, HudChannel.TITLE, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val nowTick = currentTick()
         val entry = QueueEntry.Title(
             request = request,
@@ -155,18 +164,18 @@ class HudOrchestratorService(
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
             queueLog("DROP channel=TITLE player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
-            return null
+            return@runOnPrimaryThread null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         queueLog("ENQUEUE channel=TITLE player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
-        return entry.handle
+        return@runOnPrimaryThread entry.handle
     }
 
-    override fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle? {
+    override fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle? = runOnPrimaryThread("submitScoreboard") {
         validateSourceId(request.meta.sourceId)
-        if (!isAccepted(playerId, HudChannel.SCOREBOARD, request.meta.sourceId, request.meta.sourceCooldownTicks)) return null
+        if (!isAccepted(playerId, HudChannel.SCOREBOARD, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val nowTick = currentTick()
         val entry = QueueEntry.Scoreboard(
             request = request,
@@ -180,13 +189,13 @@ class HudOrchestratorService(
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
             queueLog("DROP channel=SCOREBOARD player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
-            return null
+            return@runOnPrimaryThread null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         queueLog("ENQUEUE channel=SCOREBOARD player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
-        return entry.handle
+        return@runOnPrimaryThread entry.handle
     }
 
     override fun cancel(handle: HudHandle): Boolean {

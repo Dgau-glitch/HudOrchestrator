@@ -330,6 +330,7 @@ private class PlayerHudState(
     private var activeScoreboard: ActiveEntry<QueueEntry.Scoreboard>? = null
     private var actionBarStickySource: String? = null
     private var actionBarStickyUntilTick: Long = 0L
+    private var actionBarStickyPriority: Int = Int.MIN_VALUE
     private var scoreboardOwner: String? = null
     private var scoreboardView: ScoreboardViewState? = null
     private var previousScoreboard: org.bukkit.scoreboard.Scoreboard? = null
@@ -452,6 +453,7 @@ private class PlayerHudState(
         activeScoreboard = null
         actionBarStickySource = null
         actionBarStickyUntilTick = 0L
+        actionBarStickyPriority = Int.MIN_VALUE
         scoreboardOwner = null
         scoreboardView = null
         if (player != null && previousScoreboard != null && player.scoreboard != previousScoreboard) {
@@ -472,6 +474,7 @@ private class PlayerHudState(
             if (selected.request.meta.stickinessTicks > 0) {
                 actionBarStickySource = selected.request.meta.sourceId
                 actionBarStickyUntilTick = nowTick + selected.request.meta.stickinessTicks
+                actionBarStickyPriority = selected.request.meta.priority
             }
             queueLog("DISPATCH channel=ACTION_BAR player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
         } else {
@@ -498,6 +501,13 @@ private class PlayerHudState(
             // flicker/preemption by lower-priority fallback sources (e.g. NoUseItem).
             val active = activeActionBar
             if (active != null && !active.isExpired(nowTick) && active.entry.sourceId() == stickySource) {
+                return null
+            }
+
+            val best = actionBarQueue.bestCandidate(nowTick)
+            if (best != null && best.priority() < actionBarStickyPriority) {
+                // Sticky owner stream is still considered dominant in this window.
+                // Do not allow lower-priority fallback bursts to flash over it.
                 return null
             }
         }

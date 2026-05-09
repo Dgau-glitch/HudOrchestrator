@@ -137,7 +137,11 @@ class HudOrchestratorService(
         val bypassByCoalesce = state.actionBarQueue.hasPendingCoalesceTarget(entry)
         val bypassForIdleDropIfBusy = request.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarChannelFree(nowTick)
         val bypassRateLimit = bypassByCoalesce || bypassForIdleDropIfBusy
-        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
+        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) {
+            val debug = state.actionBarDebugState(nowTick)
+            queueLog("REJECT_DETAIL channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} channelFree=${debug.channelFree} activeSource=${debug.activeSource ?: "none"} queueSize=${debug.queueSize}")
+            return@runOnPrimaryThread null
+        }
         val result = state.actionBarQueue.offer(entry)
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
@@ -343,6 +347,22 @@ private class PlayerHudState(
     fun isActionBarChannelFree(nowTick: Long): Boolean {
         val active = activeActionBar
         return (active == null || active.isExpired(nowTick)) && actionBarQueue.isEmpty()
+    }
+
+    data class ActionBarDebugState(
+        val channelFree: Boolean,
+        val activeSource: String?,
+        val queueSize: Int
+    )
+
+    fun actionBarDebugState(nowTick: Long): ActionBarDebugState {
+        val active = activeActionBar
+        val activeSource = if (active != null && !active.isExpired(nowTick)) active.entry.sourceId() else null
+        return ActionBarDebugState(
+            channelFree = (active == null || active.isExpired(nowTick)) && actionBarQueue.isEmpty(),
+            activeSource = activeSource,
+            queueSize = actionBarQueue.size()
+        )
     }
 
 
@@ -674,6 +694,8 @@ private class HudQueue<T : QueueEntry>(
     fun clear() = queue.clear()
 
     fun isEmpty(): Boolean = queue.isEmpty()
+
+    fun size(): Int = queue.size
 }
 
 private enum class OfferResult {

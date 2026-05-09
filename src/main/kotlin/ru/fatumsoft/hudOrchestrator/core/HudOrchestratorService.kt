@@ -287,10 +287,14 @@ class HudOrchestratorService(
         if (!accepted) {
             metrics.rejectedByRateLimit.increment()
             val throttleKey = "REJECT:$channel:$playerId:$sourceId:$cooldownTicks"
+            val details = if (channel == HudChannel.ACTION_BAR) {
+                val debug = state.actionBarDebugState(currentTick())
+                " channelFree=${debug.channelFree} activeSource=${debug.activeSource ?: "none"} queueSize=${debug.queueSize}"
+            } else ""
             queueLogThrottled(
                 key = throttleKey,
                 minIntervalTicks = 40L,
-                message = "REJECT channel=$channel player=$playerId source=$sourceId reason=rate_limit cooldownTicks=$cooldownTicks"
+                message = "REJECT channel=$channel player=$playerId source=$sourceId reason=rate_limit cooldownTicks=$cooldownTicks$details"
             )
         }
         return accepted

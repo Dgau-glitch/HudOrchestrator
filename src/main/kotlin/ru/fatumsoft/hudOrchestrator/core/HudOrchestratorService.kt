@@ -134,7 +134,9 @@ class HudOrchestratorService(
             seq = sequence.incrementAndGet()
         )
         val state = playerState(playerId)
-        val bypassRateLimit = state.actionBarQueue.hasPendingCoalesceTarget(entry)
+        val bypassByCoalesce = state.actionBarQueue.hasPendingCoalesceTarget(entry)
+        val bypassForIdleDropIfBusy = request.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarChannelFree(nowTick)
+        val bypassRateLimit = bypassByCoalesce || bypassForIdleDropIfBusy
         if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val result = state.actionBarQueue.offer(entry)
         activePlayers.add(playerId)
@@ -337,6 +339,12 @@ private class PlayerHudState(
             titleQueue.isEmpty() &&
             scoreboardQueue.isEmpty()
     }
+
+    fun isActionBarChannelFree(nowTick: Long): Boolean {
+        val active = activeActionBar
+        return (active == null || active.isExpired(nowTick)) && actionBarQueue.isEmpty()
+    }
+
 
     fun cancel(handle: HudHandle): Boolean {
         val removed = when (handle.channel) {

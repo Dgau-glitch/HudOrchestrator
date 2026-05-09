@@ -174,6 +174,43 @@ logger.info("submitted=${m.submitted}, rejected=${m.rejectedByRateLimit}, droppe
 - `queueOverflowDropped`
 - `preemptions`
 
+
+## 11.1 Source overrides из `config.yml` (приоритет выше, чем в плагинах)
+
+HudOrchestrator теперь применяет `source-overrides` по маске `sourceId` (`*` поддерживается).
+
+Порядок применения:
+1. Плагин отправляет `HudRequestMeta` со своими параметрами.
+2. HudOrchestrator ищет первое совпадение в `source-overrides`.
+3. Совпавшие поля переопределяют значения из плагина.
+
+Переопределяемые поля:
+- `priority`
+- `policy`
+- `source-cooldown-ticks`
+- `stickiness-ticks`
+- `dominance-ticks`
+
+Важно: если совпадения нет, используются настройки из самого плагина (его `HudRequestMeta`).
+
+Пример:
+```yaml
+source-overrides:
+  questcore:
+    pattern: "QuestCore:*"
+    priority: 90
+    policy: PREEMPT
+    dominance-ticks: 10
+```
+
+## 11.2 Hard dominance window (`dominanceTicks`)
+
+`dominanceTicks` — отдельный режим в `HudRequestMeta` для ActionBar.
+
+Если источник отправил сообщение с `dominanceTicks > 0`, то на это окно
+блокируются кандидаты с более низким приоритетом. Это убирает “мигание”
+низкоприоритетных fallback-сообщений поверх доминирующего потока.
+
 ## 12. Async пример end-to-end
 
 ```kotlin

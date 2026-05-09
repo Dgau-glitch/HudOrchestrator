@@ -27,3 +27,20 @@ debug:
   # Logs queue lifecycle events (enqueue/drop/dispatch/reject) to console.
   # Use for diagnostics only; keep false on peak online to avoid log overhead.
   queue-logging: false
+
+source-overrides:
+  questcore:
+    pattern: "QuestCore:*"
+    priority: 90
+    policy: PREEMPT
+    dominance-ticks: 10
+  artifact-items:
+    pattern: "ArtifactItems:*"
+    priority: 75
+    stickiness-ticks: 8
+    dominance-ticks: 8
+  no-use-item:
+    pattern: "NoUseItem:*"
+    priority: 25
+    policy: DROP_IF_BUSY
+    source-cooldown-ticks: 0

@@ -33,11 +33,21 @@ data class ChannelRateLimitConfig(
     val refillPerSecond: Double
 )
 
+data class SourcePolicyOverride(
+    val pattern: String,
+    val priority: Int? = null,
+    val policy: DeliveryPolicy? = null,
+    val sourceCooldownTicks: Int? = null,
+    val stickinessTicks: Int? = null,
+    val dominanceTicks: Int? = null
+)
+
 data class HudOrchestratorRuntimeConfig(
     val actionBarRateLimit: ChannelRateLimitConfig,
     val titleRateLimit: ChannelRateLimitConfig,
     val scoreboardRateLimit: ChannelRateLimitConfig,
-    val queueLoggingEnabled: Boolean
+    val queueLoggingEnabled: Boolean,
+    val sourcePolicyOverrides: List<SourcePolicyOverride> = emptyList()
 ) {
     fun forChannel(channel: HudChannel): ChannelRateLimitConfig {
         return when (channel) {
@@ -123,90 +133,116 @@ class HudOrchestratorService(
         }
     }
 
+
+    private fun applyOverrides(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta): ru.fatumsoft.hudOrchestrator.api.HudRequestMeta {
+        val overrides = runtimeConfig.sourcePolicyOverrides
+        if (overrides.isEmpty()) return meta
+        val matched = overrides.firstOrNull { sourceMatches(it.pattern, meta.sourceId) } ?: return meta
+        return meta.copy(
+            priority = matched.priority ?: meta.priority,
+            policy = matched.policy ?: meta.policy,
+            sourceCooldownTicks = matched.sourceCooldownTicks ?: meta.sourceCooldownTicks,
+            stickinessTicks = matched.stickinessTicks ?: meta.stickinessTicks,
+            dominanceTicks = matched.dominanceTicks ?: meta.dominanceTicks
+        )
+    }
+
+    private fun sourceMatches(pattern: String, sourceId: String): Boolean {
+        if (pattern == "*") return true
+        val regex = "^" + Regex.escape(pattern).replace("*", ".*") + "$"
+        return Regex(regex).matches(sourceId)
+    }
+
     override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? = runOnPrimaryThread("submitActionBar") {
-        validateSourceId(request.meta.sourceId)
+        val effectiveMeta = applyOverrides(request.meta)
+        val effectiveRequest = request.copy(meta = effectiveMeta)
+        validateSourceId(effectiveMeta.sourceId)
         val nowTick = currentTick()
         val entry = QueueEntry.ActionBar(
-            request = request,
-            handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.ACTION_BAR, request.meta.sourceId),
+            request = effectiveRequest,
+            handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.ACTION_BAR, effectiveRequest.meta.sourceId),
             createdTick = nowTick,
-            expireTick = nowTick + max(request.meta.ttlTicks, 1),
+            expireTick = nowTick + max(effectiveRequest.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
         val state = playerState(playerId)
         val bypassByCoalesce = state.actionBarQueue.hasPendingCoalesceTarget(entry)
-        val bypassForIdleDropIfBusy = request.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarChannelFree(nowTick)
+        val bypassForIdleDropIfBusy = effectiveRequest.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarChannelFree(nowTick)
         val bypassRateLimit = bypassByCoalesce || bypassForIdleDropIfBusy
-        val effectiveCooldownTicks = if (request.meta.policy == DeliveryPolicy.DROP_IF_BUSY) 0 else request.meta.sourceCooldownTicks
-        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, effectiveCooldownTicks)) {
+        val effectiveCooldownTicks = if (effectiveRequest.meta.policy == DeliveryPolicy.DROP_IF_BUSY) 0 else effectiveRequest.meta.sourceCooldownTicks
+        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, effectiveRequest.meta.sourceId, effectiveCooldownTicks)) {
             val debug = state.actionBarDebugState(nowTick)
-            queueLog("REJECT_DETAIL channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} channelFree=${debug.channelFree} activeSource=${debug.activeSource ?: "none"} queueSize=${debug.queueSize}")
+            queueLog("REJECT_DETAIL channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} channelFree=${debug.channelFree} activeSource=${debug.activeSource ?: "none"} queueSize=${debug.queueSize}")
             return@runOnPrimaryThread null
         }
         val result = state.actionBarQueue.offer(entry)
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
-            queueLog("DROP channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
+            queueLog("DROP channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} reason=overflow priority=${effectiveRequest.meta.priority}")
             return@runOnPrimaryThread null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
-        queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
+        queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
         return@runOnPrimaryThread entry.handle
     }
 
     override fun submitTitle(playerId: UUID, request: TitleRequest): HudHandle? = runOnPrimaryThread("submitTitle") {
-        validateSourceId(request.meta.sourceId)
+        val effectiveMeta = applyOverrides(request.meta)
+        val effectiveRequest = request.copy(meta = effectiveMeta)
+        validateSourceId(effectiveMeta.sourceId)
         val nowTick = currentTick()
         val entry = QueueEntry.Title(
-            request = request,
-            handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.TITLE, request.meta.sourceId),
+            request = effectiveRequest,
+            handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.TITLE, effectiveRequest.meta.sourceId),
             createdTick = nowTick,
-            expireTick = nowTick + max(request.meta.ttlTicks, 1),
+            expireTick = nowTick + max(effectiveRequest.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
         val state = playerState(playerId)
         val bypassRateLimit = state.titleQueue.hasPendingCoalesceTarget(entry)
-        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.TITLE, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
+        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.TITLE, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val result = state.titleQueue.offer(entry)
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
-            queueLog("DROP channel=TITLE player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
+            queueLog("DROP channel=TITLE player=$playerId source=${effectiveRequest.meta.sourceId} reason=overflow priority=${effectiveRequest.meta.priority}")
             return@runOnPrimaryThread null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
-        queueLog("ENQUEUE channel=TITLE player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
+        queueLog("ENQUEUE channel=TITLE player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
         return@runOnPrimaryThread entry.handle
     }
 
     override fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle? = runOnPrimaryThread("submitScoreboard") {
-        validateSourceId(request.meta.sourceId)
+        val effectiveMeta = applyOverrides(request.meta)
+        val effectiveRequest = request.copy(meta = effectiveMeta)
+        validateSourceId(effectiveMeta.sourceId)
         val nowTick = currentTick()
         val entry = QueueEntry.Scoreboard(
-            request = request,
-            handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.SCOREBOARD, request.meta.sourceId),
+            request = effectiveRequest,
+            handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.SCOREBOARD, effectiveRequest.meta.sourceId),
             createdTick = nowTick,
-            expireTick = nowTick + max(request.meta.ttlTicks, 1),
+            expireTick = nowTick + max(effectiveRequest.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
         val state = playerState(playerId)
         val bypassRateLimit = state.scoreboardQueue.hasPendingCoalesceTarget(entry)
-        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.SCOREBOARD, request.meta.sourceId, request.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
+        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.SCOREBOARD, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks)) return@runOnPrimaryThread null
         val result = state.scoreboardQueue.offer(entry)
         activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
-            queueLog("DROP channel=SCOREBOARD player=$playerId source=${request.meta.sourceId} reason=overflow priority=${request.meta.priority}")
+            queueLog("DROP channel=SCOREBOARD player=$playerId source=${effectiveRequest.meta.sourceId} reason=overflow priority=${effectiveRequest.meta.priority}")
             return@runOnPrimaryThread null
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
-        queueLog("ENQUEUE channel=SCOREBOARD player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} priority=${request.meta.priority} result=$result")
+        queueLog("ENQUEUE channel=SCOREBOARD player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
         return@runOnPrimaryThread entry.handle
     }
@@ -331,6 +367,8 @@ private class PlayerHudState(
     private var actionBarStickySource: String? = null
     private var actionBarStickyUntilTick: Long = 0L
     private var actionBarStickyPriority: Int = Int.MIN_VALUE
+    private var actionBarDominanceUntilTick: Long = 0L
+    private var actionBarDominancePriority: Int = Int.MIN_VALUE
     private var scoreboardOwner: String? = null
     private var scoreboardView: ScoreboardViewState? = null
     private var previousScoreboard: org.bukkit.scoreboard.Scoreboard? = null
@@ -454,6 +492,8 @@ private class PlayerHudState(
         actionBarStickySource = null
         actionBarStickyUntilTick = 0L
         actionBarStickyPriority = Int.MIN_VALUE
+        actionBarDominanceUntilTick = 0L
+        actionBarDominancePriority = Int.MIN_VALUE
         scoreboardOwner = null
         scoreboardView = null
         if (player != null && previousScoreboard != null && player.scoreboard != previousScoreboard) {
@@ -475,6 +515,10 @@ private class PlayerHudState(
                 actionBarStickySource = selected.request.meta.sourceId
                 actionBarStickyUntilTick = nowTick + selected.request.meta.stickinessTicks
                 actionBarStickyPriority = selected.request.meta.priority
+            }
+            if (selected.request.meta.dominanceTicks > 0) {
+                actionBarDominanceUntilTick = nowTick + selected.request.meta.dominanceTicks
+                actionBarDominancePriority = selected.request.meta.priority
             }
             queueLog("DISPATCH channel=ACTION_BAR player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
         } else {
@@ -510,6 +554,10 @@ private class PlayerHudState(
                 // Do not allow lower-priority fallback bursts to flash over it.
                 return null
             }
+        }
+        if (nowTick < actionBarDominanceUntilTick) {
+            val best = actionBarQueue.bestCandidate(nowTick)
+            if (best != null && best.priority() < actionBarDominancePriority) return null
         }
         return selectNext(actionBarQueue, activeActionBar, nowTick)
     }

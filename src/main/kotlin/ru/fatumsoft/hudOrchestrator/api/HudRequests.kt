@@ -24,8 +24,22 @@ data class HudRequestMeta(
     val minShowTicks: Int = 10,
     val maxShowTicks: Int = 40,
     val sourceCooldownTicks: Int = 0,
-    val stickinessTicks: Int = 0
-)
+    val stickinessTicks: Int = 0,
+    val dominanceTicks: Int = 0
+) {
+    constructor(
+        sourceId: String,
+        priority: Int,
+        policy: DeliveryPolicy,
+        dedupKey: String?,
+        replaceGroup: String?,
+        ttlTicks: Int,
+        minShowTicks: Int,
+        maxShowTicks: Int,
+        sourceCooldownTicks: Int,
+        stickinessTicks: Int
+    ) : this(sourceId, priority, policy, dedupKey, replaceGroup, ttlTicks, minShowTicks, maxShowTicks, sourceCooldownTicks, stickinessTicks, 0)
+}
 
 data class ActionBarRequest(
     val content: Component,

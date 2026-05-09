@@ -6,6 +6,7 @@ import ru.fatumsoft.hudOrchestrator.api.HudOrchestratorApi
 import ru.fatumsoft.hudOrchestrator.command.HudOrchestratorCommand
 import ru.fatumsoft.hudOrchestrator.core.ChannelRateLimitConfig
 import ru.fatumsoft.hudOrchestrator.core.HudOrchestratorService
+import ru.fatumsoft.hudOrchestrator.core.SourcePolicyOverride
 import ru.fatumsoft.hudOrchestrator.core.HudOrchestratorRuntimeConfig
 
 class HudOrchestrator : JavaPlugin() {
@@ -60,11 +61,29 @@ class HudOrchestrator : JavaPlugin() {
             return ChannelRateLimitConfig(capacity = capacity, refillPerSecond = refill)
         }
 
+
+        fun loadSourceOverrides(): List<SourcePolicyOverride> {
+            val section = config.getConfigurationSection("source-overrides") ?: return emptyList()
+            return section.getKeys(false).mapNotNull { key ->
+                val row = section.getConfigurationSection(key) ?: return@mapNotNull null
+                val policy = row.getString("policy")?.let { runCatching { ru.fatumsoft.hudOrchestrator.api.DeliveryPolicy.valueOf(it.uppercase()) }.getOrNull() }
+                SourcePolicyOverride(
+                    pattern = row.getString("pattern", key) ?: key,
+                    priority = row.getInt("priority").takeIf { row.contains("priority") },
+                    policy = policy,
+                    sourceCooldownTicks = row.getInt("source-cooldown-ticks").takeIf { row.contains("source-cooldown-ticks") },
+                    stickinessTicks = row.getInt("stickiness-ticks").takeIf { row.contains("stickiness-ticks") },
+                    dominanceTicks = row.getInt("dominance-ticks").takeIf { row.contains("dominance-ticks") }
+                )
+            }
+        }
+
         return HudOrchestratorRuntimeConfig(
             actionBarRateLimit = loadRateLimit("rate-limit.action-bar", 20.0, 10.0),
             titleRateLimit = loadRateLimit("rate-limit.title", 5.0, 2.0),
             scoreboardRateLimit = loadRateLimit("rate-limit.scoreboard", 4.0, 1.0),
-            queueLoggingEnabled = config.getBoolean("debug.queue-logging", false)
+            queueLoggingEnabled = config.getBoolean("debug.queue-logging", false),
+            sourcePolicyOverrides = loadSourceOverrides()
         )
     }
 }

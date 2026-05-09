@@ -137,7 +137,8 @@ class HudOrchestratorService(
         val bypassByCoalesce = state.actionBarQueue.hasPendingCoalesceTarget(entry)
         val bypassForIdleDropIfBusy = request.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarChannelFree(nowTick)
         val bypassRateLimit = bypassByCoalesce || bypassForIdleDropIfBusy
-        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, request.meta.sourceCooldownTicks)) {
+        val effectiveCooldownTicks = if (request.meta.policy == DeliveryPolicy.DROP_IF_BUSY) 0 else request.meta.sourceCooldownTicks
+        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, request.meta.sourceId, effectiveCooldownTicks)) {
             val debug = state.actionBarDebugState(nowTick)
             queueLog("REJECT_DETAIL channel=ACTION_BAR player=$playerId source=${request.meta.sourceId} policy=${request.meta.policy} channelFree=${debug.channelFree} activeSource=${debug.activeSource ?: "none"} queueSize=${debug.queueSize}")
             return@runOnPrimaryThread null

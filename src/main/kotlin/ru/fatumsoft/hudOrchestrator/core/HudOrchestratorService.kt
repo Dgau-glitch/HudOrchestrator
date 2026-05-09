@@ -64,7 +64,7 @@ class HudOrchestratorService(
 
     private fun queueLog(message: String) {
         if (!runtimeConfig.queueLoggingEnabled) return
-        plugin.logger.info("[HudQueue] $message")
+        queueLogThrottled(message, 20L, message)
     }
 
     private fun queueLogThrottled(key: String, minIntervalTicks: Long, message: String) {
@@ -494,8 +494,12 @@ private class PlayerHudState(
                 return stickyCandidate
             }
             // Sticky window is active but owner source has no pending update.
-            // Do not keep channel empty/reserved, otherwise low-priority fallback
-            // messages (e.g. NoUseItem) may starve even when they are the only queue entry.
+            // Keep currently displayed sticky owner until it expires to avoid one-tick
+            // flicker/preemption by lower-priority fallback sources (e.g. NoUseItem).
+            val active = activeActionBar
+            if (active != null && !active.isExpired(nowTick) && active.entry.sourceId() == stickySource) {
+                return null
+            }
         }
         return selectNext(actionBarQueue, activeActionBar, nowTick)
     }

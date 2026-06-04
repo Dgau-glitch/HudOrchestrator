@@ -177,7 +177,7 @@ logger.info("submitted=${m.submitted}, rejected=${m.rejectedByRateLimit}, droppe
 
 ## 11.1 Source overrides из `config.yml` (приоритет выше, чем в плагинах)
 
-HudOrchestrator теперь применяет `source-overrides` по маске `sourceId` (`*` поддерживается).
+HudOrchestrator теперь применяет `source-overrides` по маске `sourceId` (`*` поддерживается, например `ArtifactItems:*`).
 
 Порядок применения:
 1. Плагин отправляет `HudRequestMeta` со своими параметрами.
@@ -207,9 +207,9 @@ source-overrides:
 
 `dominanceTicks` — отдельный режим в `HudRequestMeta` для ActionBar.
 
-Если источник отправил сообщение с `dominanceTicks > 0`, то на это окно
-блокируются кандидаты с более низким приоритетом. Это убирает “мигание”
-низкоприоритетных fallback-сообщений поверх доминирующего потока.
+Если источник отправил или поставил в очередь сообщение с `dominanceTicks > 0`, HudOrchestrator держит защитное окно для этого приоритета.
+Низкоприоритетные кандидаты блокируются не только во время показа, но и между обновлениями доминирующего потока. Это убирает “мигание”
+низкоприоритетных fallback-сообщений поверх `ArtifactItems`/`QuestCore`.
 
 
 ## 11.3 Строгая защита приоритета для `DROP_IF_BUSY`

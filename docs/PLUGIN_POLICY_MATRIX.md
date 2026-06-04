@@ -125,7 +125,7 @@ HudRequestMeta(
 
 ## 6.2 Почему `noUseItem` больше не должен мигать поверх ArtifactItems
 
-`noUseItem` должен использовать `DROP_IF_BUSY` и низкий `priority=25`. При такой комбинации HudOrchestrator считает его fallback-сообщением: если сейчас активен/доминирует/ожидает источник с более высоким приоритетом (`ArtifactItems=75`, `QuestCore=90`), запрос `noUseItem` отбрасывается и не отправляется в Minecraft ActionBar API.
+`noUseItem` должен использовать `DROP_IF_BUSY` и низкий `priority=25`. При такой комбинации HudOrchestrator считает его fallback-сообщением: если сейчас активен/доминирует/ожидает источник с более высоким приоритетом (`ArtifactItems=75`, `QuestCore=90`), запрос `noUseItem` отбрасывается и не отправляется в Minecraft ActionBar API. Для `ArtifactItems:*` рекомендуется `dominance-ticks: 20`, чтобы закрывать короткие паузы между частыми обновлениями артефактов.
 
 Если какому-то низкоприоритетному сценарию нужно именно дождаться очереди, а не быть отброшенным, для него надо выбрать `ENQUEUE` или `COALESCE`, но не `DROP_IF_BUSY`.
 

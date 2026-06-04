@@ -149,8 +149,10 @@ class HudOrchestratorService(
 
     private fun sourceMatches(pattern: String, sourceId: String): Boolean {
         if (pattern == "*") return true
-        val regex = "^" + Regex.escape(pattern).replace("*", ".*") + "$"
-        return Regex(regex).matches(sourceId)
+        val regex = pattern
+            .split('*')
+            .joinToString(".*") { Regex.escape(it) }
+        return Regex("^$regex$").matches(sourceId)
     }
 
     override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? = runOnPrimaryThread("submitActionBar") {
@@ -189,6 +191,7 @@ class HudOrchestratorService(
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        state.rememberActionBarDominance(effectiveRequest.meta, nowTick)
         queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
         return@runOnPrimaryThread entry.handle
@@ -404,6 +407,18 @@ private class PlayerHudState(
         if (nowTick < actionBarStickyUntilTick && actionBarStickyPriority > priority) return true
         if (nowTick < actionBarDominanceUntilTick && actionBarDominancePriority > priority) return true
         return actionBarQueue.hasPriorityAbove(priority)
+    }
+
+    fun rememberActionBarDominance(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta, nowTick: Long) {
+        if (meta.dominanceTicks <= 0) return
+        val untilTick = nowTick + max(meta.maxShowTicks, 1) + meta.dominanceTicks
+        if (nowTick >= actionBarDominanceUntilTick) {
+            actionBarDominancePriority = meta.priority
+            actionBarDominanceUntilTick = untilTick
+            return
+        }
+        actionBarDominanceUntilTick = max(actionBarDominanceUntilTick, untilTick)
+        actionBarDominancePriority = max(actionBarDominancePriority, meta.priority)
     }
 
     data class ActionBarDebugState(

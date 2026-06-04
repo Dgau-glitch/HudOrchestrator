@@ -33,12 +33,12 @@ source-overrides:
     pattern: "QuestCore:*"
     priority: 90
     policy: PREEMPT
-    dominance-ticks: 10
+    dominance-ticks: 20
   artifact-items:
     pattern: "ArtifactItems:*"
     priority: 75
-    stickiness-ticks: 8
-    dominance-ticks: 8
+    stickiness-ticks: 10
+    dominance-ticks: 20
   no-use-item:
     pattern: "NoUseItem:*"
     priority: 25

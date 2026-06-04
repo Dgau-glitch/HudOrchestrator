@@ -193,8 +193,15 @@ class HudOrchestratorService(
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         state.rememberActionBarPriorityFloor(effectiveRequest.meta, nowTick)
         state.rememberActionBarDominance(effectiveRequest.meta, nowTick)
+        val removedFallbacks = state.dropLowerPriorityActionBarFallbacks(effectiveRequest.meta.priority)
+        if (removedFallbacks > 0) {
+            repeat(removedFallbacks) { metrics.droppedByPolicy.increment() }
+            queueLog("DROP channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} reason=lower_priority_fallback_superseded removed=$removedFallbacks priority=${effectiveRequest.meta.priority}")
+        }
         queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
-        processPlayerNowIfPossible(playerId)
+        if (effectiveRequest.meta.policy != DeliveryPolicy.DROP_IF_BUSY) {
+            processPlayerNowIfPossible(playerId)
+        }
         return@runOnPrimaryThread entry.handle
     }
 
@@ -437,6 +444,12 @@ private class PlayerHudState(
         }
         actionBarDominanceUntilTick = max(actionBarDominanceUntilTick, untilTick)
         actionBarDominancePriority = max(actionBarDominancePriority, meta.priority)
+    }
+
+    fun dropLowerPriorityActionBarFallbacks(priority: Int): Int {
+        return actionBarQueue.removeWhere { entry ->
+            entry.request.meta.policy == DeliveryPolicy.DROP_IF_BUSY && entry.priority() < priority
+        }
     }
 
     data class ActionBarDebugState(
@@ -767,6 +780,19 @@ private class HudQueue<T : QueueEntry>(
         var idx = queue.size - 1
         while (idx >= 0) {
             if (queue[idx].sourceBelongsToPlugin(pluginName)) {
+                queue.removeAt(idx)
+                removed++
+            }
+            idx--
+        }
+        return removed
+    }
+
+    fun removeWhere(predicate: (T) -> Boolean): Int {
+        var removed = 0
+        var idx = queue.size - 1
+        while (idx >= 0) {
+            if (predicate(queue[idx])) {
                 queue.removeAt(idx)
                 removed++
             }

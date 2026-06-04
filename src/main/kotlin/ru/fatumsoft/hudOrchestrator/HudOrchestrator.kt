@@ -83,7 +83,8 @@ class HudOrchestrator : JavaPlugin() {
             titleRateLimit = loadRateLimit("rate-limit.title", 5.0, 2.0),
             scoreboardRateLimit = loadRateLimit("rate-limit.scoreboard", 4.0, 1.0),
             queueLoggingEnabled = config.getBoolean("debug.queue-logging", false),
-            sourcePolicyOverrides = loadSourceOverrides()
+            sourcePolicyOverrides = loadSourceOverrides(),
+            actionBarFallbackIdleGraceTicks = config.getInt("action-bar.fallback-idle-grace-ticks", 6).coerceAtLeast(0)
         )
     }
 }

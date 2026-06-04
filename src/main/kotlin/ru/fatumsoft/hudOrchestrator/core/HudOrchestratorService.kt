@@ -47,7 +47,8 @@ data class HudOrchestratorRuntimeConfig(
     val titleRateLimit: ChannelRateLimitConfig,
     val scoreboardRateLimit: ChannelRateLimitConfig,
     val queueLoggingEnabled: Boolean,
-    val sourcePolicyOverrides: List<SourcePolicyOverride> = emptyList()
+    val sourcePolicyOverrides: List<SourcePolicyOverride> = emptyList(),
+    val actionBarFallbackIdleGraceTicks: Int = 6
 ) {
     fun forChannel(channel: HudChannel): ChannelRateLimitConfig {
         return when (channel) {
@@ -376,6 +377,7 @@ private class PlayerHudState(
     val titleQueue = HudQueue<QueueEntry.Title>(maxSize = 32)
     val scoreboardQueue = HudQueue<QueueEntry.Scoreboard>(maxSize = 32)
     val rateLimiter = PlayerRateLimiter(runtimeConfig)
+    private val actionBarFallbackIdleGraceTicks = runtimeConfig.actionBarFallbackIdleGraceTicks.toLong()
 
     private var activeActionBar: ActiveEntry<QueueEntry.ActionBar>? = null
     private var activeTitle: ActiveEntry<QueueEntry.Title>? = null
@@ -385,6 +387,7 @@ private class PlayerHudState(
     private var actionBarStickyPriority: Int = Int.MIN_VALUE
     private var actionBarDominanceUntilTick: Long = 0L
     private var actionBarDominancePriority: Int = Int.MIN_VALUE
+    private var actionBarIdleSinceTick: Long? = null
     private var scoreboardOwner: String? = null
     private var scoreboardView: ScoreboardViewState? = null
     private var previousScoreboard: org.bukkit.scoreboard.Scoreboard? = null
@@ -419,6 +422,15 @@ private class PlayerHudState(
         if (nowTick < actionBarStickyUntilTick && actionBarStickyPriority > priority) return true
         if (nowTick < actionBarDominanceUntilTick && actionBarDominancePriority > priority) return true
         return actionBarQueue.hasPriorityAbove(priority)
+    }
+
+    fun canDispatchActionBarFallback(entry: QueueEntry.ActionBar, nowTick: Long): Boolean {
+        if (entry.request.meta.policy != DeliveryPolicy.DROP_IF_BUSY) return true
+        if (isActionBarBlockedByHigherPriority(entry.priority(), nowTick)) return false
+        val active = activeActionBar
+        if (active != null && !active.isExpired(nowTick)) return false
+        val idleSince = actionBarIdleSinceTick ?: return false
+        return nowTick - idleSince >= actionBarFallbackIdleGraceTicks && nowTick - entry.createdTick >= actionBarFallbackIdleGraceTicks
     }
 
     fun rememberActionBarDominance(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta, nowTick: Long) {
@@ -546,6 +558,7 @@ private class PlayerHudState(
         titleQueue.clear()
         scoreboardQueue.clear()
         activeActionBar = null
+        actionBarIdleSinceTick = null
         activeTitle = null
         activeScoreboard = null
         actionBarStickySource = null
@@ -565,12 +578,14 @@ private class PlayerHudState(
         actionBarQueue.discardExpired(nowTick)
         val current = activeActionBar
         if (current != null && current.isExpired(nowTick)) activeActionBar = null
+        if (activeActionBar == null && actionBarIdleSinceTick == null) actionBarIdleSinceTick = nowTick
 
         val selected = selectActionBarCandidate(nowTick)
         if (selected != null && shouldActivate(selected, activeActionBar, nowTick)) {
             val holdUntilTick = nowTick + max(selected.request.meta.minShowTicks.toLong(), 1L)
             val expireAtTick = nowTick + max(selected.request.meta.maxShowTicks.toLong(), 1L)
             activeActionBar = ActiveEntry(selected, holdUntilTick, expireAtTick, nowTick)
+            actionBarIdleSinceTick = null
             selected.send(player)
             if (selected.request.meta.stickinessTicks > 0) {
                 actionBarStickySource = selected.request.meta.sourceId
@@ -620,6 +635,8 @@ private class PlayerHudState(
             val best = actionBarQueue.bestCandidate(nowTick)
             if (best != null && best.priority() < actionBarDominancePriority) return null
         }
+        val best = actionBarQueue.bestCandidate(nowTick)
+        if (best is QueueEntry.ActionBar && !canDispatchActionBarFallback(best, nowTick)) return null
         return selectNext(actionBarQueue, activeActionBar, nowTick)
     }
 

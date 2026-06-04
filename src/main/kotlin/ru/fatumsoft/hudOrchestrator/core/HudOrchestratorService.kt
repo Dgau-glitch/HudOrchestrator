@@ -166,6 +166,11 @@ class HudOrchestratorService(
             seq = sequence.incrementAndGet()
         )
         val state = playerState(playerId)
+        if (effectiveRequest.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarBlockedByHigherPriority(effectiveRequest.meta.priority, nowTick)) {
+            metrics.droppedByPolicy.increment()
+            queueLog("DROP channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} reason=higher_priority_active_or_pending priority=${effectiveRequest.meta.priority}")
+            return@runOnPrimaryThread null
+        }
         val bypassByCoalesce = state.actionBarQueue.hasPendingCoalesceTarget(entry)
         val bypassForIdleDropIfBusy = effectiveRequest.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarChannelFree(nowTick)
         val bypassRateLimit = bypassByCoalesce || bypassForIdleDropIfBusy
@@ -393,6 +398,14 @@ private class PlayerHudState(
         return (active == null || active.isExpired(nowTick)) && actionBarQueue.isEmpty()
     }
 
+    fun isActionBarBlockedByHigherPriority(priority: Int, nowTick: Long): Boolean {
+        val active = activeActionBar
+        if (active != null && !active.isExpired(nowTick) && active.entry.priority() > priority) return true
+        if (nowTick < actionBarStickyUntilTick && actionBarStickyPriority > priority) return true
+        if (nowTick < actionBarDominanceUntilTick && actionBarDominancePriority > priority) return true
+        return actionBarQueue.hasPriorityAbove(priority)
+    }
+
     data class ActionBarDebugState(
         val channelFree: Boolean,
         val activeSource: String?,
@@ -509,7 +522,9 @@ private class PlayerHudState(
 
         val selected = selectActionBarCandidate(nowTick)
         if (selected != null && shouldActivate(selected, activeActionBar, nowTick)) {
-            activeActionBar = ActiveEntry(selected, nowTick + max(selected.request.meta.minShowTicks.toLong(), 1L), nowTick + max(selected.request.meta.maxShowTicks.toLong(), 1L), nowTick)
+            val holdUntilTick = nowTick + max(selected.request.meta.minShowTicks.toLong(), 1L)
+            val expireAtTick = nowTick + max(selected.request.meta.maxShowTicks.toLong(), 1L)
+            activeActionBar = ActiveEntry(selected, holdUntilTick, expireAtTick, nowTick)
             selected.send(player)
             if (selected.request.meta.stickinessTicks > 0) {
                 actionBarStickySource = selected.request.meta.sourceId
@@ -517,7 +532,7 @@ private class PlayerHudState(
                 actionBarStickyPriority = selected.request.meta.priority
             }
             if (selected.request.meta.dominanceTicks > 0) {
-                actionBarDominanceUntilTick = nowTick + selected.request.meta.dominanceTicks
+                actionBarDominanceUntilTick = expireAtTick + selected.request.meta.dominanceTicks
                 actionBarDominancePriority = selected.request.meta.priority
             }
             queueLog("DISPATCH channel=ACTION_BAR player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
@@ -665,6 +680,8 @@ private class HudQueue<T : QueueEntry>(
         return queue.any { it.sourceId() == entry.sourceId() && (it.requestMeta().dedupKey == replaceBy || it.requestMeta().replaceGroup == replaceBy) }
     }
 
+    fun hasPriorityAbove(priority: Int): Boolean = queue.any { it.priority() > priority }
+
     fun offer(entry: T): OfferResult {
         val meta = entry.requestMeta()
         val replaceBy = meta.dedupKey ?: meta.replaceGroup
@@ -745,14 +762,18 @@ private class HudQueue<T : QueueEntry>(
 
     private fun bestCandidateInternal(nowTick: Long, predicate: (T) -> Boolean): T? {
         var best: T? = null
-        var bestScore = Int.MIN_VALUE
+        var bestPriority = Int.MIN_VALUE
+        var bestWaitScore = Int.MIN_VALUE
         for (entry in queue) {
             if (!predicate(entry)) continue
-            val wait = (nowTick - entry.createdTick).coerceAtLeast(0)
-            val effective = entry.priority() + (wait / 20L).toInt()
-            if (effective > bestScore || (effective == bestScore && (best == null || entry.seq < best.seq))) {
+            val priority = entry.priority()
+            val waitScore = ((nowTick - entry.createdTick).coerceAtLeast(0) / 20L).toInt()
+            if (priority > bestPriority ||
+                (priority == bestPriority && (waitScore > bestWaitScore || (waitScore == bestWaitScore && (best == null || entry.seq < best.seq))))
+            ) {
                 best = entry
-                bestScore = effective
+                bestPriority = priority
+                bestWaitScore = waitScore
             }
         }
         return best

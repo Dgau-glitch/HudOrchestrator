@@ -191,6 +191,7 @@ class HudOrchestratorService(
         }
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        state.rememberActionBarPriorityFloor(effectiveRequest.meta, nowTick)
         state.rememberActionBarDominance(effectiveRequest.meta, nowTick)
         queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         processPlayerNowIfPossible(playerId)
@@ -381,6 +382,10 @@ private class PlayerHudState(
     private var scoreboardView: ScoreboardViewState? = null
     private var previousScoreboard: org.bukkit.scoreboard.Scoreboard? = null
 
+    companion object {
+        private const val DEFAULT_PRIORITY_FLOOR_GUARD_TICKS = 20
+    }
+
     fun process(player: Player, nowTick: Long) {
         processActionBar(player, nowTick)
         processTitle(player, nowTick)
@@ -412,6 +417,19 @@ private class PlayerHudState(
     fun rememberActionBarDominance(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta, nowTick: Long) {
         if (meta.dominanceTicks <= 0) return
         val untilTick = nowTick + max(meta.maxShowTicks, 1) + meta.dominanceTicks
+        if (nowTick >= actionBarDominanceUntilTick) {
+            actionBarDominancePriority = meta.priority
+            actionBarDominanceUntilTick = untilTick
+            return
+        }
+        actionBarDominanceUntilTick = max(actionBarDominanceUntilTick, untilTick)
+        actionBarDominancePriority = max(actionBarDominancePriority, meta.priority)
+    }
+
+    fun rememberActionBarPriorityFloor(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta, nowTick: Long) {
+        if (meta.policy == DeliveryPolicy.DROP_IF_BUSY) return
+        val guardTicks = max(max(meta.dominanceTicks, meta.stickinessTicks), DEFAULT_PRIORITY_FLOOR_GUARD_TICKS)
+        val untilTick = nowTick + max(meta.maxShowTicks, 1) + guardTicks
         if (nowTick >= actionBarDominanceUntilTick) {
             actionBarDominancePriority = meta.priority
             actionBarDominanceUntilTick = untilTick

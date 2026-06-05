@@ -1,5 +1,7 @@
 package ru.fatumsoft.hudOrchestrator
 
+import org.bukkit.command.CommandSender
+import org.bukkit.entity.Player
 import org.bukkit.plugin.ServicePriority
 import org.bukkit.plugin.java.JavaPlugin
 import ru.fatumsoft.hudOrchestrator.api.HudOrchestratorApi
@@ -8,10 +10,13 @@ import ru.fatumsoft.hudOrchestrator.core.ChannelRateLimitConfig
 import ru.fatumsoft.hudOrchestrator.core.HudOrchestratorService
 import ru.fatumsoft.hudOrchestrator.core.SourcePolicyOverride
 import ru.fatumsoft.hudOrchestrator.core.HudOrchestratorRuntimeConfig
+import ru.fatumsoft.hudOrchestrator.scheduler.FoliaHudScheduler
+import java.util.concurrent.CompletableFuture
 
 class HudOrchestrator : JavaPlugin() {
 
     private lateinit var orchestratorService: HudOrchestratorService
+    private val lifecycleScheduler by lazy { FoliaHudScheduler(this) }
 
     override fun onEnable() {
         saveDefaultConfig()
@@ -29,9 +34,32 @@ class HudOrchestrator : JavaPlugin() {
         logger.info("HudOrchestrator disabled")
     }
 
-    fun reloadOrchestratorConfig() {
-        reloadConfig()
-        restartService()
+    fun reloadOrchestratorConfig(): CompletableFuture<Unit> = reloadOrchestratorConfigAsync()
+
+    fun reloadOrchestratorConfigAsync(): CompletableFuture<Unit> {
+        val future = CompletableFuture<Unit>()
+        lifecycleScheduler.runGlobal {
+            try {
+                reloadConfig()
+                restartService()
+                future.complete(Unit)
+            } catch (throwable: Throwable) {
+                future.completeExceptionally(throwable)
+            }
+        }
+        return future
+    }
+
+    fun sendCommandFeedback(sender: CommandSender, message: String) {
+        if (sender is Player) {
+            lifecycleScheduler.runPlayer(sender, {
+                sender.sendMessage(message)
+            })
+            return
+        }
+        lifecycleScheduler.runGlobal {
+            sender.sendMessage(message)
+        }
     }
 
     private fun restartService() {

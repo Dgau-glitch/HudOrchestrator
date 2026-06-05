@@ -12,23 +12,30 @@ class HudOrchestratorCommand(
 
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         if (!sender.hasPermission(PERMISSION_ADMIN)) {
-            sender.sendMessage("§cУ вас нет прав.")
+            plugin.sendCommandFeedback(sender, "§cУ вас нет прав.")
             return true
         }
 
         if (args.isEmpty() || args[0].equals("help", ignoreCase = true)) {
-            sender.sendMessage("§e/$label reload §7- перезагрузить конфиг и сервис HudOrchestrator")
+            plugin.sendCommandFeedback(sender, "§e/$label reload §7- перезагрузить конфиг и сервис HudOrchestrator")
             return true
         }
 
         return when (args[0].lowercase()) {
             "reload" -> {
-                plugin.reloadOrchestratorConfig()
-                sender.sendMessage("§aHudOrchestrator: конфиг и сервис перезагружены.")
+                plugin.sendCommandFeedback(sender, "§eHudOrchestrator: reload запланирован на Folia global scheduler...")
+                plugin.reloadOrchestratorConfigAsync().whenComplete { _, throwable ->
+                    if (throwable != null) {
+                        plugin.logger.severe("HudOrchestrator reload failed: ${throwable.message}")
+                        plugin.sendCommandFeedback(sender, "§cHudOrchestrator: reload завершился ошибкой. Проверьте консоль.")
+                    } else {
+                        plugin.sendCommandFeedback(sender, "§aHudOrchestrator: конфиг и сервис перезагружены.")
+                    }
+                }
                 true
             }
             else -> {
-                sender.sendMessage("§cНеизвестная подкоманда. Используйте: /$label reload")
+                plugin.sendCommandFeedback(sender, "§cНеизвестная подкоманда. Используйте: /$label reload")
                 true
             }
         }

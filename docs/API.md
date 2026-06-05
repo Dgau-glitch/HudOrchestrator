@@ -43,6 +43,12 @@ Legacy helpers `submit*ThreadSafe(plugin, ...)` оставлены для сов
 
 `clearPlayer`, quit/kick cleanup и shutdown не вызывают визуальный restore напрямую из произвольного потока. Если у сервиса есть ссылка на online `Player`, восстановление scoreboard планируется через `player.scheduler`; если entity scheduler retired, внутренние maps/tasks очищаются без обращения к player API.
 
+### Admin reload на Folia
+
+`/hudorchestrator reload` не перезапускает сервис прямо из command handler. Команда планирует reload на Folia `globalRegionScheduler`: сначала отменяются player tasks текущего сервиса, затем внутреннее состояние очищается, config перечитывается и регистрируется новый `HudOrchestratorApi`. Сообщения игроку-администратору отправляются через его `player.scheduler`; console feedback отправляется на global scheduler.
+
+`plugin.yml` содержит `folia-supported: true`, потому что submit/render/cleanup/reload пути больше не зависят от единого Bukkit main thread.
+
 ## 4. ActionBar: рекомендуемый профиль
 
 ```kotlin

@@ -104,7 +104,6 @@ class HudOrchestratorService(
         playerTasks.values.forEach { it.cancel() }
         playerTasks.clear()
         playerRefs.clear()
-        scheduler.cancelAll()
     }
 
     @EventHandler

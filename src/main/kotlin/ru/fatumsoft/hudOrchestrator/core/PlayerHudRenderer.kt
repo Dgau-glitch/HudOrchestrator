@@ -7,6 +7,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerRe
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerScoreboardObjective
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTeams
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerUpdateScore
+import com.github.retrooper.packetevents.protocol.score.ScoreFormat
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
 import net.kyori.adventure.title.Title
@@ -16,7 +17,6 @@ import ru.fatumsoft.hudOrchestrator.api.ActionBarRequest
 import ru.fatumsoft.hudOrchestrator.api.ScoreboardRequest
 import ru.fatumsoft.hudOrchestrator.api.TitleRequest
 import java.time.Duration
-import java.util.Optional
 
 internal data class ScoreboardViewState(
     var objectiveCreated: Boolean,
@@ -79,7 +79,8 @@ internal object PlayerHudRenderer {
                     OBJECTIVE_NAME,
                     WrapperPlayServerScoreboardObjective.ObjectiveMode.REMOVE,
                     Component.empty(),
-                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER
+                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER,
+                    BLANK_SCORE_FORMAT
                 )
             )
             view.objectiveCreated = false
@@ -104,7 +105,8 @@ internal object PlayerHudRenderer {
                     OBJECTIVE_NAME,
                     WrapperPlayServerScoreboardObjective.ObjectiveMode.REMOVE,
                     Component.empty(),
-                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER
+                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER,
+                    BLANK_SCORE_FORMAT
                 )
             )
             sendPacket(
@@ -113,7 +115,8 @@ internal object PlayerHudRenderer {
                     OBJECTIVE_NAME,
                     WrapperPlayServerScoreboardObjective.ObjectiveMode.CREATE,
                     request.title,
-                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER
+                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER,
+                    BLANK_SCORE_FORMAT
                 )
             )
             state.objectiveCreated = true
@@ -124,7 +127,8 @@ internal object PlayerHudRenderer {
                     OBJECTIVE_NAME,
                     WrapperPlayServerScoreboardObjective.ObjectiveMode.UPDATE,
                     request.title,
-                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER
+                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER,
+                    BLANK_SCORE_FORMAT
                 )
             )
         }
@@ -168,7 +172,9 @@ internal object PlayerHudRenderer {
                         entry,
                         WrapperPlayServerUpdateScore.Action.CREATE_OR_UPDATE_ITEM,
                         OBJECTIVE_NAME,
-                        Optional.of(15 - index)
+                        15 - index,
+                        Component.empty(),
+                        BLANK_SCORE_FORMAT
                     )
                 )
             }
@@ -214,6 +220,8 @@ internal object PlayerHudRenderer {
     private fun sendPacket(player: Player, packet: PacketWrapper<*>) {
         PacketEvents.getAPI().playerManager.sendPacket(player, packet)
     }
+
+    private val BLANK_SCORE_FORMAT = ScoreFormat.blankScore()
 
     private const val PLAYER_LIST_SLOT = 0
     private const val SIDEBAR_SLOT = 1

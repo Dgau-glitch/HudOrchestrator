@@ -24,7 +24,9 @@ import ru.fatumsoft.hudOrchestrator.scheduler.FoliaHudScheduler
 import ru.fatumsoft.hudOrchestrator.scheduler.ScheduledHudTask
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.LongAdder
 import kotlin.math.max
@@ -66,10 +68,9 @@ class HudOrchestratorService(
 ) : HudOrchestratorApi, Listener {
 
     private val states = ConcurrentHashMap<UUID, PlayerHudState>()
-    private val activePlayers = ConcurrentHashMap.newKeySet<UUID>()
+    private val playerTasks = ConcurrentHashMap<UUID, ScheduledHudTask>()
     private val sequence = AtomicLong(0L)
     private val scheduler = FoliaHudScheduler(plugin)
-    private var task: ScheduledHudTask? = null
     private val warnedInvalidSources = ConcurrentHashMap.newKeySet<String>()
     private val metrics = HudMetrics()
     private val queueLogLastTick = ConcurrentHashMap<String, Long>()
@@ -96,17 +97,15 @@ class HudOrchestratorService(
 
     fun start() {
         plugin.server.pluginManager.registerEvents(this, plugin)
-        task = scheduler.runGlobalRepeating(1L, 1L) { tick() }
     }
 
     fun shutdown() {
-        task?.cancel()
-        task = null
+        playerTasks.values.forEach { it.cancel() }
+        playerTasks.clear()
         states.forEach { (playerId, state) ->
             clearVisualStateOnPlayerThread(playerId, state)
         }
         states.clear()
-        activePlayers.clear()
     }
 
     @EventHandler
@@ -114,7 +113,11 @@ class HudOrchestratorService(
         val disabledName = event.plugin.name
         if (disabledName.equals(plugin.name, ignoreCase = true)) return
 
-        states.values.forEach { it.cancelByPluginName(disabledName) }
+        states.keys.forEach { playerId ->
+            runOnPlayerThread(playerId, "cancelByPluginName") {
+                states[playerId]?.cancelByPluginName(disabledName)
+            }
+        }
     }
 
     @EventHandler
@@ -127,16 +130,29 @@ class HudOrchestratorService(
         clearPlayer(event.player.uniqueId)
     }
 
-    private fun <T> runOnPlayerThread(playerId: UUID, actionName: String, block: () -> T): T? {
+    private fun <T> runOnPlayerThread(playerId: UUID, actionName: String, block: (Player) -> T): T? {
         val player = Bukkit.getPlayer(playerId) ?: return null
         if (!player.isOnline) return null
         return try {
-            scheduler.supplyPlayer(player, block).get()
-        } catch (ex: Exception) {
-            throw IllegalStateException("$actionName must run on player entity thread", ex)
+            scheduler.supplyPlayer(player, { block(player) }).get()
+        } catch (ex: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IllegalStateException("$actionName was interrupted while waiting for player entity scheduler", ex)
+        } catch (ex: ExecutionException) {
+            if (ex.isRetiredSchedulerFailure()) return null
+            throw IllegalStateException("$actionName failed on player entity scheduler", ex)
+        } catch (ex: CompletionException) {
+            if (ex.isRetiredSchedulerFailure()) return null
+            throw IllegalStateException("$actionName failed on player entity scheduler", ex)
         }
     }
 
+
+
+    private fun Exception.isRetiredSchedulerFailure(): Boolean {
+        val cause = cause
+        return cause is IllegalStateException && cause.message?.startsWith("Player scheduler") == true
+    }
 
     private fun applyOverrides(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta): ru.fatumsoft.hudOrchestrator.api.HudRequestMeta {
         val overrides = runtimeConfig.sourcePolicyOverrides
@@ -159,7 +175,7 @@ class HudOrchestratorService(
         return Regex("^$regex$").matches(sourceId)
     }
 
-    override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? = runOnPlayerThread(playerId, "submitActionBar") {
+    override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? = runOnPlayerThread(playerId, "submitActionBar") { player ->
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
@@ -187,12 +203,12 @@ class HudOrchestratorService(
             return@runOnPlayerThread null
         }
         val result = state.actionBarQueue.offer(entry)
-        activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
             queueLog("DROP channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} reason=overflow priority=${effectiveRequest.meta.priority}")
             return@runOnPlayerThread null
         }
+        ensurePlayerTask(playerId, player)
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         state.rememberActionBarPriorityFloor(effectiveRequest.meta, nowTick)
@@ -204,12 +220,12 @@ class HudOrchestratorService(
         }
         queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         if (effectiveRequest.meta.policy != DeliveryPolicy.DROP_IF_BUSY) {
-            processPlayerNowIfPossible(playerId)
+            processPlayerNow(playerId, player, state)
         }
         return@runOnPlayerThread entry.handle
     }
 
-    override fun submitTitle(playerId: UUID, request: TitleRequest): HudHandle? = runOnPlayerThread(playerId, "submitTitle") {
+    override fun submitTitle(playerId: UUID, request: TitleRequest): HudHandle? = runOnPlayerThread(playerId, "submitTitle") { player ->
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
@@ -225,20 +241,20 @@ class HudOrchestratorService(
         val bypassRateLimit = state.titleQueue.hasPendingCoalesceTarget(entry)
         if (!bypassRateLimit && !isAccepted(playerId, HudChannel.TITLE, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks)) return@runOnPlayerThread null
         val result = state.titleQueue.offer(entry)
-        activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
             queueLog("DROP channel=TITLE player=$playerId source=${effectiveRequest.meta.sourceId} reason=overflow priority=${effectiveRequest.meta.priority}")
             return@runOnPlayerThread null
         }
+        ensurePlayerTask(playerId, player)
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         queueLog("ENQUEUE channel=TITLE player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
-        processPlayerNowIfPossible(playerId)
+        processPlayerNow(playerId, player, state)
         return@runOnPlayerThread entry.handle
     }
 
-    override fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle? = runOnPlayerThread(playerId, "submitScoreboard") {
+    override fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle? = runOnPlayerThread(playerId, "submitScoreboard") { player ->
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
@@ -254,34 +270,42 @@ class HudOrchestratorService(
         val bypassRateLimit = state.scoreboardQueue.hasPendingCoalesceTarget(entry)
         if (!bypassRateLimit && !isAccepted(playerId, HudChannel.SCOREBOARD, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks)) return@runOnPlayerThread null
         val result = state.scoreboardQueue.offer(entry)
-        activePlayers.add(playerId)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
             queueLog("DROP channel=SCOREBOARD player=$playerId source=${effectiveRequest.meta.sourceId} reason=overflow priority=${effectiveRequest.meta.priority}")
             return@runOnPlayerThread null
         }
+        ensurePlayerTask(playerId, player)
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
         queueLog("ENQUEUE channel=SCOREBOARD player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
-        processPlayerNowIfPossible(playerId)
+        processPlayerNow(playerId, player, state)
         return@runOnPlayerThread entry.handle
     }
 
     override fun cancel(handle: HudHandle): Boolean {
-        return states[handle.playerId]?.cancel(handle) ?: false
+        return runOnPlayerThread(handle.playerId, "cancel") {
+            states[handle.playerId]?.cancel(handle) ?: false
+        } ?: false
     }
 
     override fun cancelBySource(sourceId: String, playerId: UUID?, channel: HudChannel?): Int {
         return if (playerId != null) {
-            states[playerId]?.cancelBySource(sourceId, channel) ?: 0
+            runOnPlayerThread(playerId, "cancelBySource") {
+                states[playerId]?.cancelBySource(sourceId, channel) ?: 0
+            } ?: 0
         } else {
-            states.values.sumOf { it.cancelBySource(sourceId, channel) }
+            states.keys.sumOf { scopedPlayerId ->
+                runOnPlayerThread(scopedPlayerId, "cancelBySource") {
+                    states[scopedPlayerId]?.cancelBySource(sourceId, channel) ?: 0
+                } ?: 0
+            }
         }
     }
 
     override fun clearPlayer(playerId: UUID) {
         val state = states.remove(playerId)
-        activePlayers.remove(playerId)
+        playerTasks.remove(playerId)?.cancel()
         if (state != null) clearVisualStateOnPlayerThread(playerId, state)
     }
 
@@ -301,44 +325,30 @@ class HudOrchestratorService(
         })
     }
 
-    private fun tick() {
-        val nowTick = currentTick()
-        if (activePlayers.isEmpty()) return
-
-        val iterator = activePlayers.iterator()
-        while (iterator.hasNext()) {
-            val playerId = iterator.next()
-            val state = states[playerId]
-            if (state == null) {
-                iterator.remove()
-                continue
-            }
-
-            val player = Bukkit.getPlayer(playerId)
-            if (player == null || !player.isOnline) {
-                state.clearVisualState(null)
-                states.remove(playerId)
-                iterator.remove()
-                continue
-            }
-
-            scheduler.runPlayer(player, {
-                try {
-                    state.process(player, nowTick)
-                } catch (t: Throwable) {
-                    plugin.logger.severe("HudOrchestrator tick failed for player=$playerId: ${t.message}")
-                    t.printStackTrace()
+    private fun ensurePlayerTask(playerId: UUID, player: Player) {
+        if (playerTasks.containsKey(playerId)) return
+        val scheduled = scheduler.runPlayerRepeating(
+            player = player,
+            initialDelayTicks = 1L,
+            periodTicks = 1L,
+            task = {
+                val state = states[playerId]
+                if (state == null) {
+                    playerTasks.remove(playerId)?.cancel()
+                    return@runPlayerRepeating
                 }
-                if (state.isIdle()) {
-                    state.clearVisualState(player)
-                    states.remove(playerId)
-                    activePlayers.remove(playerId)
-                }
-            }, retired = {
-                state.clearVisualState(null)
-                states.remove(playerId)
-                activePlayers.remove(playerId)
-            })
+                processPlayerTick(playerId, player, state)
+            },
+            retired = {
+                states.remove(playerId)?.clearVisualState(null)
+                playerTasks.remove(playerId)?.cancel()
+            }
+        )
+        if (scheduled != null) {
+            val existing = playerTasks.putIfAbsent(playerId, scheduled)
+            if (existing != null) scheduled.cancel()
+        } else {
+            states.remove(playerId)?.clearVisualState(null)
         }
     }
 
@@ -346,21 +356,32 @@ class HudOrchestratorService(
         return states.computeIfAbsent(playerId) { PlayerHudState(runtimeConfig, metrics, ::queueLog) }
     }
 
-    private fun processPlayerNowIfPossible(playerId: UUID) {
-        val player = Bukkit.getPlayer(playerId) ?: return
-        if (!player.isOnline) return
-        val state = states[playerId] ?: return
-        scheduler.runPlayer(player, {
-            try {
-                state.process(player, currentTick())
-            } catch (t: Throwable) {
-                plugin.logger.severe("HudOrchestrator immediate process failed for player=$playerId: ${t.message}")
-                t.printStackTrace()
-            }
-        }, retired = {
+    private fun processPlayerNow(playerId: UUID, player: Player, state: PlayerHudState) {
+        processPlayer(playerId, player, state, currentTick(), immediate = true)
+    }
+
+    private fun processPlayerTick(playerId: UUID, player: Player, state: PlayerHudState) {
+        processPlayer(playerId, player, state, currentTick(), immediate = false)
+    }
+
+    private fun processPlayer(playerId: UUID, player: Player, state: PlayerHudState, nowTick: Long, immediate: Boolean) {
+        if (!player.isOnline) {
+            states.remove(playerId)?.clearVisualState(null)
+            playerTasks.remove(playerId)?.cancel()
+            return
+        }
+        try {
+            state.process(player, nowTick)
+        } catch (t: Throwable) {
+            val phase = if (immediate) "immediate process" else "tick"
+            plugin.logger.severe("HudOrchestrator $phase failed for player=$playerId: ${t.message}")
+            t.printStackTrace()
+        }
+        if (state.isIdle()) {
+            state.clearVisualState(player)
             states.remove(playerId)
-            activePlayers.remove(playerId)
-        })
+            playerTasks.remove(playerId)?.cancel()
+        }
     }
 
     private fun isAccepted(playerId: UUID, channel: HudChannel, sourceId: String, cooldownTicks: Int): Boolean {

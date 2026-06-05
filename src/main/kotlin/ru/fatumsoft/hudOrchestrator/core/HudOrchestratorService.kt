@@ -500,7 +500,6 @@ private class PlayerHudState(
     private var actionBarIdleSinceTick: Long? = null
     private var scoreboardOwner: String? = null
     private var scoreboardView: ScoreboardViewState? = null
-    private var previousScoreboard: org.bukkit.scoreboard.Scoreboard? = null
     private var localTick: Long = 0L
 
     companion object {
@@ -694,9 +693,7 @@ private class PlayerHudState(
         scoreboardView = null
         if (player != null) {
             PlayerHudRenderer.clearScoreboard(player, view)
-            PlayerHudRenderer.restoreScoreboard(player, previousScoreboard)
         }
-        previousScoreboard = null
     }
 
     private fun processActionBar(player: Player, nowTick: Long) {
@@ -802,9 +799,6 @@ private class PlayerHudState(
                     if (selected.request.ownerMode) Long.MAX_VALUE else nowTick + max(selected.request.meta.maxShowTicks.toLong(), 40L),
                     nowTick
                 )
-                if (scoreboardView == null) {
-                    previousScoreboard = PlayerHudRenderer.currentScoreboard(player)
-                }
                 scoreboardView = PlayerHudRenderer.renderScoreboard(player, selected.request, scoreboardView)
                 queueLog("DISPATCH channel=SCOREBOARD player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority} ownerMode=${selected.request.ownerMode}")
             }

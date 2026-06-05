@@ -12,10 +12,17 @@ repositories {
     maven("https://repo.papermc.io/repository/maven-public/") {
         name = "papermc-repo"
     }
+    maven("https://repo.codemc.io/repository/maven-releases/") {
+        name = "codemc-releases"
+    }
+    maven("https://repo.codemc.io/repository/maven-snapshots/") {
+        name = "codemc-snapshots"
+    }
 }
 
 dependencies {
     compileOnly("dev.folia:folia-api:1.21.11-R0.1-SNAPSHOT")
+    compileOnly("com.github.retrooper:packetevents-spigot:2.12.2")
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
 }
 

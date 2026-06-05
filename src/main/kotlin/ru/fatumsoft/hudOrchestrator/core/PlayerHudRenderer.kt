@@ -1,20 +1,25 @@
 package ru.fatumsoft.hudOrchestrator.core
 
+import com.github.retrooper.packetevents.PacketEvents
+import com.github.retrooper.packetevents.wrapper.PacketWrapper
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDisplayScoreboard
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerResetScore
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerScoreboardObjective
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTeams
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerUpdateScore
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.format.NamedTextColor
 import net.kyori.adventure.title.Title
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
-import org.bukkit.scoreboard.Criteria
-import org.bukkit.scoreboard.DisplaySlot
-import org.bukkit.scoreboard.Objective
 import ru.fatumsoft.hudOrchestrator.api.ActionBarRequest
 import ru.fatumsoft.hudOrchestrator.api.ScoreboardRequest
 import ru.fatumsoft.hudOrchestrator.api.TitleRequest
 import java.time.Duration
+import java.util.Optional
 
 internal data class ScoreboardViewState(
-    val board: org.bukkit.scoreboard.Scoreboard,
-    var objective: Objective,
+    var objectiveCreated: Boolean,
     var sidebar: Boolean,
     var title: Component,
     val linesByIndex: MutableMap<Int, Component>
@@ -29,6 +34,7 @@ internal data class ScoreboardViewState(
 internal object PlayerHudRenderer {
     private const val OBJECTIVE_NAME = "hud_orchestrator"
     private val ENTRIES = Array(15) { i -> "§${(i + 1).toString(16)}" }
+    private val TEAM_NAMES = Array(15) { i -> "ho_${i.toString().padStart(2, '0')}" }
 
     fun sendActionBar(player: Player, request: ActionBarRequest) {
         requireEntityThread(player)
@@ -50,98 +56,141 @@ internal object PlayerHudRenderer {
         )
     }
 
-    fun currentScoreboard(player: Player): org.bukkit.scoreboard.Scoreboard {
-        requireEntityThread(player)
-        return player.scoreboard
-    }
-
-    fun restoreScoreboard(player: Player, previousScoreboard: org.bukkit.scoreboard.Scoreboard?) {
-        requireEntityThread(player)
-        if (previousScoreboard != null && player.scoreboard != previousScoreboard) {
-            player.scoreboard = previousScoreboard
-        }
-    }
-
     fun ensureScoreboardVisible(player: Player, state: ScoreboardViewState?) {
         requireEntityThread(player)
-        val board = state?.board ?: return
-        if (player.scoreboard !== board) {
-            player.scoreboard = board
+        val view = state ?: return
+        if (view.objectiveCreated) {
+            sendPacket(player, WrapperPlayServerDisplayScoreboard(if (view.sidebar) SIDEBAR_SLOT else PLAYER_LIST_SLOT, OBJECTIVE_NAME))
         }
     }
 
     fun clearScoreboard(player: Player, state: ScoreboardViewState?) {
         requireEntityThread(player)
         val view = state ?: return
-        for (entry in ENTRIES) {
-            view.board.resetScores(entry)
-            view.board.getTeam(entry)?.unregister()
+        for (index in ENTRIES.indices) {
+            resetScore(player, index)
+            removeTeam(player, index)
         }
         view.linesByIndex.clear()
-        if (view.board.getObjective(OBJECTIVE_NAME) === view.objective) {
-            view.objective.unregister()
+        if (view.objectiveCreated) {
+            sendPacket(
+                player,
+                WrapperPlayServerScoreboardObjective(
+                    OBJECTIVE_NAME,
+                    WrapperPlayServerScoreboardObjective.ObjectiveMode.REMOVE,
+                    Component.empty(),
+                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER
+                )
+            )
+            view.objectiveCreated = false
         }
     }
 
     fun renderScoreboard(player: Player, request: ScoreboardRequest, previous: ScoreboardViewState?): ScoreboardViewState {
         requireEntityThread(player)
-        // Folia currently rejects ScoreboardManager#getNewScoreboard() at runtime. Reuse the
-        // player's current scoreboard and own only HudOrchestrator's objective/team entries.
-        val board = previous?.board ?: player.scoreboard
-        val objective = previous?.objective
-            ?.takeIf { board.getObjective(OBJECTIVE_NAME) === it }
-            ?: ensureObjective(board, request.title)
-        val objectiveChanged = previous?.objective !== objective
-
-        if (previous == null || objectiveChanged || previous.title != request.title) {
-            objective.displayName(request.title)
-        }
-        val sidebar = request.sidebar
-        val slot = if (sidebar) DisplaySlot.SIDEBAR else DisplaySlot.PLAYER_LIST
-        if (previous == null || objectiveChanged || previous.sidebar != sidebar) {
-            objective.displaySlot = slot
-        }
-
+        // Folia throws UnsupportedOperationException for several Bukkit scoreboard operations.
+        // PacketEvents sends only clientbound scoreboard packets and does not mutate Bukkit scoreboard state.
         val state = previous ?: ScoreboardViewState(
-            board = board,
-            objective = objective,
-            sidebar = sidebar,
+            objectiveCreated = false,
+            sidebar = request.sidebar,
             title = request.title,
             linesByIndex = HashMap(16)
         )
-        state.objective = objective
-        state.sidebar = sidebar
+
+        if (!state.objectiveCreated) {
+            sendPacket(
+                player,
+                WrapperPlayServerScoreboardObjective(
+                    OBJECTIVE_NAME,
+                    WrapperPlayServerScoreboardObjective.ObjectiveMode.REMOVE,
+                    Component.empty(),
+                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER
+                )
+            )
+            sendPacket(
+                player,
+                WrapperPlayServerScoreboardObjective(
+                    OBJECTIVE_NAME,
+                    WrapperPlayServerScoreboardObjective.ObjectiveMode.CREATE,
+                    request.title,
+                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER
+                )
+            )
+            state.objectiveCreated = true
+        } else if (state.title != request.title) {
+            sendPacket(
+                player,
+                WrapperPlayServerScoreboardObjective(
+                    OBJECTIVE_NAME,
+                    WrapperPlayServerScoreboardObjective.ObjectiveMode.UPDATE,
+                    request.title,
+                    WrapperPlayServerScoreboardObjective.RenderType.INTEGER
+                )
+            )
+        }
+
+        val slot = if (request.sidebar) SIDEBAR_SLOT else PLAYER_LIST_SLOT
+        if (previous == null || state.sidebar != request.sidebar) {
+            sendPacket(player, WrapperPlayServerDisplayScoreboard(slot, OBJECTIVE_NAME))
+        }
+        state.sidebar = request.sidebar
         state.title = request.title
 
         val requested = request.lines.take(15)
-        for (index in 0 until 15) {
+        for (index in ENTRIES.indices) {
             val old = state.linesByIndex[index]
             val next = requested.getOrNull(index)
+            val entry = ENTRIES[index]
+            val teamName = TEAM_NAMES[index]
+
             if (next == null) {
                 if (old != null) {
-                    val entry = ENTRIES[index]
-                    board.resetScores(entry)
-                    board.getTeam(entry)?.unregister()
+                    resetScore(player, index)
+                    removeTeam(player, index)
                     state.linesByIndex.remove(index)
                 }
                 continue
             }
 
-            if (old == next) continue
+            if (old != next) {
+                val mode = if (old == null) WrapperPlayServerTeams.TeamMode.CREATE else WrapperPlayServerTeams.TeamMode.UPDATE
+                if (old == null) {
+                    removeTeam(player, index)
+                }
+                sendPacket(player, WrapperPlayServerTeams(teamName, mode, teamInfo(next), entry))
+                state.linesByIndex[index] = next
+            }
 
-            val entry = ENTRIES[index]
-            val score = 15 - index
-            objective.getScore(entry).score = score
-            val team = getOrCreateTeam(board, entry)
-            team.addEntry(entry)
-            team.prefix(next)
-            state.linesByIndex[index] = next
+            if (old == null) {
+                sendPacket(
+                    player,
+                    WrapperPlayServerUpdateScore(
+                        entry,
+                        WrapperPlayServerUpdateScore.Action.CREATE_OR_UPDATE_ITEM,
+                        OBJECTIVE_NAME,
+                        Optional.of(15 - index)
+                    )
+                )
+            }
         }
 
-        if (player.scoreboard !== board) {
-            player.scoreboard = board
-        }
         return state
+    }
+
+    private fun resetScore(player: Player, index: Int) {
+        sendPacket(player, WrapperPlayServerResetScore(ENTRIES[index], OBJECTIVE_NAME))
+    }
+
+    private fun removeTeam(player: Player, index: Int) {
+        sendPacket(
+            player,
+            WrapperPlayServerTeams(
+                TEAM_NAMES[index],
+                WrapperPlayServerTeams.TeamMode.REMOVE,
+                null as WrapperPlayServerTeams.ScoreBoardTeamInfo?,
+                ENTRIES[index]
+            )
+        )
     }
 
     private fun requireEntityThread(player: Player) {
@@ -150,13 +199,22 @@ internal object PlayerHudRenderer {
         }
     }
 
-    private fun ensureObjective(scoreboard: org.bukkit.scoreboard.Scoreboard, title: Component): Objective {
-        val existing = scoreboard.getObjective(OBJECTIVE_NAME)
-        if (existing != null) return existing
-        return scoreboard.registerNewObjective(OBJECTIVE_NAME, Criteria.DUMMY, title)
+    private fun teamInfo(line: Component): WrapperPlayServerTeams.ScoreBoardTeamInfo {
+        return WrapperPlayServerTeams.ScoreBoardTeamInfo(
+            Component.empty(),
+            line,
+            Component.empty(),
+            WrapperPlayServerTeams.NameTagVisibility.ALWAYS,
+            WrapperPlayServerTeams.CollisionRule.ALWAYS,
+            NamedTextColor.WHITE,
+            WrapperPlayServerTeams.OptionData.NONE
+        )
     }
 
-    private fun getOrCreateTeam(scoreboard: org.bukkit.scoreboard.Scoreboard, name: String): org.bukkit.scoreboard.Team {
-        return scoreboard.getTeam(name) ?: scoreboard.registerNewTeam(name)
+    private fun sendPacket(player: Player, packet: PacketWrapper<*>) {
+        PacketEvents.getAPI().playerManager.sendPacket(player, packet)
     }
+
+    private const val PLAYER_LIST_SLOT = 0
+    private const val SIDEBAR_SLOT = 1
 }

@@ -4,6 +4,7 @@ main: ru.fatumsoft.hudOrchestrator.HudOrchestrator
 api-version: '1.21'
 folia-supported: true
 authors: [ Dgau2 ]
+depend: [packetevents]
 commands:
   hudorchestrator:
     description: HudOrchestrator admin command

@@ -36,7 +36,6 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
             return null
         }
         val scheduled = player.scheduler.run(plugin, { task() }, retired?.let { Runnable { it() } })
-        if (scheduled == null) retired?.invoke()
         return scheduled?.asHudTask()
     }
 
@@ -47,7 +46,6 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
             retired?.let { Runnable { it() } },
             delayTicks.coerceAtLeast(1L)
         )
-        if (scheduled == null) retired?.invoke()
         return scheduled?.asHudTask()
     }
 
@@ -65,7 +63,6 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
             initialDelayTicks.coerceAtLeast(1L),
             periodTicks.coerceAtLeast(1L)
         )
-        if (scheduled == null) retired?.invoke()
         return scheduled?.asHudTask()
     }
 

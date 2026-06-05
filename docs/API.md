@@ -35,6 +35,10 @@ hud.submitScoreboardAsync(player.uniqueId, request)
 
 Legacy helpers `submit*ThreadSafe(plugin, ...)` оставлены для совместимости, но теперь просто делегируют в `submit*Async(...)`; планирование остаётся ответственностью реализации HudOrchestrator.
 
+### Player-local ticks
+
+Внутри сервиса TTL, cooldown, `minShowTicks`, `maxShowTicks`, `stickinessTicks` и `dominanceTicks` считаются не через глобальный `Bukkit.getCurrentTick()`, а через локальный счётчик `PlayerHudState`. Он увеличивается только per-player repeating task этого игрока. Это соответствует Folia-модели, где регионы тикают независимо, и исключает зависимость HUD-очереди игрока от глобального tick counter.
+
 ## 4. ActionBar: рекомендуемый профиль
 
 ```kotlin

@@ -71,6 +71,7 @@ class HudOrchestratorService(
     private val metrics = HudMetrics()
     private val queueLogLastTick = ConcurrentHashMap<String, Long>()
     private val queueLogRepeatCount = ConcurrentHashMap<String, Int>()
+    private val queueLogClock = AtomicLong(0L)
 
     private fun queueLog(message: String) {
         if (!runtimeConfig.queueLoggingEnabled) return
@@ -79,7 +80,7 @@ class HudOrchestratorService(
 
     private fun queueLogThrottled(key: String, minIntervalTicks: Long, message: String) {
         if (!runtimeConfig.queueLoggingEnabled) return
-        val now = currentTick()
+        val now = queueLogClock.incrementAndGet()
         val newCount = (queueLogRepeatCount[key] ?: 0) + 1
         queueLogRepeatCount[key] = newCount
         val last = queueLogLastTick[key]
@@ -175,7 +176,8 @@ class HudOrchestratorService(
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
-        val nowTick = currentTick()
+        val state = playerState(playerId)
+        val nowTick = state.currentTick()
         val entry = QueueEntry.ActionBar(
             request = effectiveRequest,
             handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.ACTION_BAR, effectiveRequest.meta.sourceId),
@@ -183,7 +185,6 @@ class HudOrchestratorService(
             expireTick = nowTick + max(effectiveRequest.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        val state = playerState(playerId)
         if (effectiveRequest.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarBlockedByHigherPriority(effectiveRequest.meta.priority, nowTick)) {
             metrics.droppedByPolicy.increment()
             queueLog("DROP channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} reason=higher_priority_active_or_pending priority=${effectiveRequest.meta.priority}")
@@ -193,7 +194,7 @@ class HudOrchestratorService(
         val bypassForIdleDropIfBusy = effectiveRequest.meta.policy == DeliveryPolicy.DROP_IF_BUSY && state.isActionBarChannelFree(nowTick)
         val bypassRateLimit = bypassByCoalesce || bypassForIdleDropIfBusy
         val effectiveCooldownTicks = if (effectiveRequest.meta.policy == DeliveryPolicy.DROP_IF_BUSY) 0 else effectiveRequest.meta.sourceCooldownTicks
-        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.ACTION_BAR, effectiveRequest.meta.sourceId, effectiveCooldownTicks)) {
+        if (!bypassRateLimit && !isAccepted(playerId, state, HudChannel.ACTION_BAR, effectiveRequest.meta.sourceId, effectiveCooldownTicks, nowTick)) {
             val debug = state.actionBarDebugState(nowTick)
             queueLog("REJECT_DETAIL channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} channelFree=${debug.channelFree} activeSource=${debug.activeSource ?: "none"} queueSize=${debug.queueSize}")
             return@runOnPlayerThread null
@@ -225,7 +226,8 @@ class HudOrchestratorService(
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
-        val nowTick = currentTick()
+        val state = playerState(playerId)
+        val nowTick = state.currentTick()
         val entry = QueueEntry.Title(
             request = effectiveRequest,
             handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.TITLE, effectiveRequest.meta.sourceId),
@@ -233,9 +235,8 @@ class HudOrchestratorService(
             expireTick = nowTick + max(effectiveRequest.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        val state = playerState(playerId)
         val bypassRateLimit = state.titleQueue.hasPendingCoalesceTarget(entry)
-        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.TITLE, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks)) return@runOnPlayerThread null
+        if (!bypassRateLimit && !isAccepted(playerId, state, HudChannel.TITLE, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks, nowTick)) return@runOnPlayerThread null
         val result = state.titleQueue.offer(entry)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
@@ -254,7 +255,8 @@ class HudOrchestratorService(
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
-        val nowTick = currentTick()
+        val state = playerState(playerId)
+        val nowTick = state.currentTick()
         val entry = QueueEntry.Scoreboard(
             request = effectiveRequest,
             handle = HudHandle(UUID.randomUUID(), playerId, HudChannel.SCOREBOARD, effectiveRequest.meta.sourceId),
@@ -262,9 +264,8 @@ class HudOrchestratorService(
             expireTick = nowTick + max(effectiveRequest.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        val state = playerState(playerId)
         val bypassRateLimit = state.scoreboardQueue.hasPendingCoalesceTarget(entry)
-        if (!bypassRateLimit && !isAccepted(playerId, HudChannel.SCOREBOARD, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks)) return@runOnPlayerThread null
+        if (!bypassRateLimit && !isAccepted(playerId, state, HudChannel.SCOREBOARD, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks, nowTick)) return@runOnPlayerThread null
         val result = state.scoreboardQueue.offer(entry)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
             metrics.queueOverflowDropped.increment()
@@ -343,10 +344,7 @@ class HudOrchestratorService(
 
     private fun clearVisualStateOnPlayerThread(playerId: UUID, state: PlayerHudState) {
         val player = Bukkit.getPlayer(playerId)
-        if (player == null || !player.isOnline) {
-            state.clearVisualState(null)
-            return
-        }
+        if (player == null || !player.isOnline) return
         scheduler.runPlayer(player, {
             state.clearVisualState(player)
         }, retired = {
@@ -377,7 +375,7 @@ class HudOrchestratorService(
             val existing = playerTasks.putIfAbsent(playerId, scheduled)
             if (existing != null) scheduled.cancel()
         } else {
-            states.remove(playerId)?.clearVisualState(null)
+            states.remove(playerId)
         }
     }
 
@@ -386,16 +384,16 @@ class HudOrchestratorService(
     }
 
     private fun processPlayerNow(playerId: UUID, player: Player, state: PlayerHudState) {
-        processPlayer(playerId, player, state, currentTick(), immediate = true)
+        processPlayer(playerId, player, state, state.currentTick(), immediate = true)
     }
 
     private fun processPlayerTick(playerId: UUID, player: Player, state: PlayerHudState) {
-        processPlayer(playerId, player, state, currentTick(), immediate = false)
+        processPlayer(playerId, player, state, state.advanceTick(), immediate = false)
     }
 
     private fun processPlayer(playerId: UUID, player: Player, state: PlayerHudState, nowTick: Long, immediate: Boolean) {
         if (!player.isOnline) {
-            states.remove(playerId)?.clearVisualState(null)
+            states.remove(playerId)
             playerTasks.remove(playerId)?.cancel()
             return
         }
@@ -413,14 +411,20 @@ class HudOrchestratorService(
         }
     }
 
-    private fun isAccepted(playerId: UUID, channel: HudChannel, sourceId: String, cooldownTicks: Int): Boolean {
-        val state = playerState(playerId)
-        val accepted = state.rateLimiter.accept(channel, sourceId, currentTick(), cooldownTicks)
+    private fun isAccepted(
+        playerId: UUID,
+        state: PlayerHudState,
+        channel: HudChannel,
+        sourceId: String,
+        cooldownTicks: Int,
+        nowTick: Long
+    ): Boolean {
+        val accepted = state.rateLimiter.accept(channel, sourceId, nowTick, cooldownTicks)
         if (!accepted) {
             metrics.rejectedByRateLimit.increment()
             val throttleKey = "REJECT:$channel:$playerId:$sourceId:$cooldownTicks"
             val details = if (channel == HudChannel.ACTION_BAR) {
-                val debug = state.actionBarDebugState(currentTick())
+                val debug = state.actionBarDebugState(nowTick)
                 " channelFree=${debug.channelFree} activeSource=${debug.activeSource ?: "none"} queueSize=${debug.queueSize}"
             } else ""
             queueLogThrottled(
@@ -431,8 +435,6 @@ class HudOrchestratorService(
         }
         return accepted
     }
-
-    private fun currentTick(): Long = Bukkit.getCurrentTick().toLong()
 
     private fun validateSourceId(sourceId: String) {
         if (SOURCE_PATTERN.matches(sourceId)) return
@@ -469,9 +471,17 @@ private class PlayerHudState(
     private var scoreboardOwner: String? = null
     private var scoreboardView: ScoreboardViewState? = null
     private var previousScoreboard: org.bukkit.scoreboard.Scoreboard? = null
+    private var localTick: Long = 0L
 
     companion object {
         private const val DEFAULT_PRIORITY_FLOOR_GUARD_TICKS = 20
+    }
+
+    fun currentTick(): Long = localTick
+
+    fun advanceTick(): Long {
+        localTick += 1L
+        return localTick
     }
 
     fun process(player: Player, nowTick: Long) {

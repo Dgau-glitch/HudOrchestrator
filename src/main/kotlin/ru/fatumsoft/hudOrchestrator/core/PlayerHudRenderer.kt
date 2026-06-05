@@ -62,12 +62,18 @@ internal object PlayerHudRenderer {
         }
     }
 
+    fun ensureScoreboardVisible(player: Player, state: ScoreboardViewState?) {
+        requireEntityThread(player)
+        val board = state?.board ?: return
+        if (player.scoreboard !== board) {
+            player.scoreboard = board
+        }
+    }
+
     fun renderScoreboard(player: Player, request: ScoreboardRequest, previous: ScoreboardViewState?): ScoreboardViewState {
         requireEntityThread(player)
         val manager = Bukkit.getScoreboardManager()
-        val board = previous?.board
-            ?: player.scoreboard.takeIf { it != manager.mainScoreboard }
-            ?: manager.newScoreboard
+        val board = previous?.board ?: manager.newScoreboard
         val objective = previous?.objective ?: ensureObjective(board, request.title)
 
         if (previous == null || previous.title != request.title) {

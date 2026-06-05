@@ -105,6 +105,9 @@ val handle = hud.submitTitle(player.uniqueId, request)
 
 ## 6. Scoreboard: owner-mode
 
+`ownerMode=true` делает scoreboard устойчивым владельцем канала: после dispatch он не истекает по `maxShowTicks`, а сервис каждый tick проверяет, что HUD scoreboard всё ещё назначен игроку. Если другой плагин временно поменял `player.scoreboard`, HudOrchestrator пере-применит свою доску на entity thread игрока. Для обновлений того же источника используйте тот же `sourceId` и `COALESCE`/`dedupKey`.
+
+
 ```kotlin
 val request = ScoreboardRequest(
     title = Component.text("§6Артефакт"),

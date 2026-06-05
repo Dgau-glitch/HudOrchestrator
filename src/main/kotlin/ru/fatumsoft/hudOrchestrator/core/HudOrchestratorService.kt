@@ -762,9 +762,12 @@ private class PlayerHudState(
         scoreboardQueue.discardExpired(nowTick)
         val current = activeScoreboard
         if (current != null && current.isExpired(nowTick)) activeScoreboard = null
+        if (activeScoreboard != null) {
+            PlayerHudRenderer.ensureScoreboardVisible(player, scoreboardView)
+        }
 
         val selected = selectNext(scoreboardQueue, activeScoreboard, nowTick)
-        if (selected != null && shouldActivate(selected, activeScoreboard, nowTick)) {
+        if (selected != null && shouldActivateScoreboard(selected, activeScoreboard, nowTick)) {
             if (selected.request.ownerMode) {
                 scoreboardOwner = selected.request.meta.sourceId
             }
@@ -774,16 +777,21 @@ private class PlayerHudState(
                 activeScoreboard = ActiveEntry(
                     selected,
                     nowTick + max(selected.request.meta.minShowTicks.toLong(), 20L),
-                    nowTick + max(selected.request.meta.maxShowTicks.toLong(), 40L),
+                    if (selected.request.ownerMode) Long.MAX_VALUE else nowTick + max(selected.request.meta.maxShowTicks.toLong(), 40L),
                     nowTick
                 )
                 if (scoreboardView == null) {
                     previousScoreboard = PlayerHudRenderer.currentScoreboard(player)
                 }
                 scoreboardView = PlayerHudRenderer.renderScoreboard(player, selected.request, scoreboardView)
-                queueLog("DISPATCH channel=SCOREBOARD player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
+                queueLog("DISPATCH channel=SCOREBOARD player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority} ownerMode=${selected.request.ownerMode}")
             }
         }
+    }
+
+    private fun shouldActivateScoreboard(selected: QueueEntry.Scoreboard, current: ActiveEntry<QueueEntry.Scoreboard>?, nowTick: Long): Boolean {
+        if (current != null && selected.sourceId() == current.entry.sourceId()) return true
+        return shouldActivate(selected, current, nowTick)
     }
 
     private fun <T : QueueEntry> shouldActivate(selected: T, current: ActiveEntry<T>?, nowTick: Long): Boolean {

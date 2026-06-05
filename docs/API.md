@@ -107,6 +107,7 @@ val handle = hud.submitTitle(player.uniqueId, request)
 
 `ownerMode=true` делает scoreboard устойчивым владельцем канала: после dispatch он не истекает по `maxShowTicks`, а сервис каждый tick проверяет, что HUD scoreboard всё ещё назначен игроку. Если другой плагин временно поменял `player.scoreboard`, HudOrchestrator пере-применит свою доску на entity thread игрока. Для обновлений того же источника используйте тот же `sourceId` и `COALESCE`/`dedupKey`: same-source обновления активного scoreboard принимаются как refresh и не блокируются source cooldown.
 
+Folia-важно: renderer не вызывает `ScoreboardManager#getNewScoreboard()`, потому что на Folia этот путь может бросать `UnsupportedOperationException`. Вместо этого HudOrchestrator использует текущий `player.scoreboard` и управляет только своим objective `hud_orchestrator` и временными team/entry-строками. Поэтому для production лучше направлять все sidebar-scoreboard потоки через HudOrchestrator, чтобы другие плагины не перетирали тот же display slot или objective. При очистке канала сервис удаляет свой objective/строки на entity thread игрока.
 
 ```kotlin
 val request = ScoreboardRequest(

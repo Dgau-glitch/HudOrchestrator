@@ -676,8 +676,10 @@ private class PlayerHudState(
         actionBarDominanceUntilTick = 0L
         actionBarDominancePriority = Int.MIN_VALUE
         scoreboardOwner = null
+        val view = scoreboardView
         scoreboardView = null
         if (player != null) {
+            PlayerHudRenderer.clearScoreboard(player, view)
             PlayerHudRenderer.restoreScoreboard(player, previousScoreboard)
         }
         previousScoreboard = null

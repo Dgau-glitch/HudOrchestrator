@@ -14,7 +14,7 @@ import java.time.Duration
 
 internal data class ScoreboardViewState(
     val board: org.bukkit.scoreboard.Scoreboard,
-    val objective: Objective,
+    var objective: Objective,
     var sidebar: Boolean,
     var title: Component,
     val linesByIndex: MutableMap<Int, Component>
@@ -70,18 +70,35 @@ internal object PlayerHudRenderer {
         }
     }
 
+    fun clearScoreboard(player: Player, state: ScoreboardViewState?) {
+        requireEntityThread(player)
+        val view = state ?: return
+        for (entry in ENTRIES) {
+            view.board.resetScores(entry)
+            view.board.getTeam(entry)?.unregister()
+        }
+        view.linesByIndex.clear()
+        if (view.board.getObjective(OBJECTIVE_NAME) === view.objective) {
+            view.objective.unregister()
+        }
+    }
+
     fun renderScoreboard(player: Player, request: ScoreboardRequest, previous: ScoreboardViewState?): ScoreboardViewState {
         requireEntityThread(player)
-        val manager = Bukkit.getScoreboardManager()
-        val board = previous?.board ?: manager.newScoreboard
-        val objective = previous?.objective ?: ensureObjective(board, request.title)
+        // Folia currently rejects ScoreboardManager#getNewScoreboard() at runtime. Reuse the
+        // player's current scoreboard and own only HudOrchestrator's objective/team entries.
+        val board = previous?.board ?: player.scoreboard
+        val objective = previous?.objective
+            ?.takeIf { board.getObjective(OBJECTIVE_NAME) === it }
+            ?: ensureObjective(board, request.title)
+        val objectiveChanged = previous?.objective !== objective
 
-        if (previous == null || previous.title != request.title) {
+        if (previous == null || objectiveChanged || previous.title != request.title) {
             objective.displayName(request.title)
         }
         val sidebar = request.sidebar
         val slot = if (sidebar) DisplaySlot.SIDEBAR else DisplaySlot.PLAYER_LIST
-        if (previous == null || previous.sidebar != sidebar) {
+        if (previous == null || objectiveChanged || previous.sidebar != sidebar) {
             objective.displaySlot = slot
         }
 
@@ -92,6 +109,7 @@ internal object PlayerHudRenderer {
             title = request.title,
             linesByIndex = HashMap(16)
         )
+        state.objective = objective
         state.sidebar = sidebar
         state.title = request.title
 

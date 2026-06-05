@@ -3,6 +3,7 @@ package ru.fatumsoft.hudOrchestrator.api
 import net.kyori.adventure.text.Component
 import org.bukkit.Bukkit
 import org.bukkit.plugin.Plugin
+import ru.fatumsoft.hudOrchestrator.scheduler.FoliaHudScheduler
 import java.util.concurrent.CompletableFuture
 import java.util.UUID
 
@@ -120,59 +121,47 @@ interface HudOrchestratorApi {
     fun metricsSnapshot(): HudMetricsSnapshot
 
     /**
-     * Thread-safe helper: executes submit on main thread when called asynchronously.
+     * Thread-safe helper: executes submit on the player's Folia entity scheduler.
      */
     fun submitActionBarThreadSafe(plugin: Plugin, playerId: UUID, request: ActionBarRequest): CompletableFuture<HudHandle?> {
-        if (Bukkit.isPrimaryThread()) {
-            return CompletableFuture.completedFuture(submitActionBar(playerId, request))
-        }
-
-        val future = CompletableFuture<HudHandle?>()
-        Bukkit.getScheduler().runTask(plugin, Runnable {
-            try {
-                future.complete(submitActionBar(playerId, request))
-            } catch (t: Throwable) {
-                future.completeExceptionally(t)
-            }
-        })
-        return future
+        return submitOnPlayerScheduler(plugin, playerId) { submitActionBar(playerId, request) }
     }
 
     /**
-     * Thread-safe helper: executes submit on main thread when called asynchronously.
+     * Thread-safe helper: executes submit on the player's Folia entity scheduler.
      */
     fun submitTitleThreadSafe(plugin: Plugin, playerId: UUID, request: TitleRequest): CompletableFuture<HudHandle?> {
-        if (Bukkit.isPrimaryThread()) {
-            return CompletableFuture.completedFuture(submitTitle(playerId, request))
-        }
-
-        val future = CompletableFuture<HudHandle?>()
-        Bukkit.getScheduler().runTask(plugin, Runnable {
-            try {
-                future.complete(submitTitle(playerId, request))
-            } catch (t: Throwable) {
-                future.completeExceptionally(t)
-            }
-        })
-        return future
+        return submitOnPlayerScheduler(plugin, playerId) { submitTitle(playerId, request) }
     }
 
     /**
-     * Thread-safe helper: executes submit on main thread when called asynchronously.
+     * Thread-safe helper: executes submit on the player's Folia entity scheduler.
      */
     fun submitScoreboardThreadSafe(plugin: Plugin, playerId: UUID, request: ScoreboardRequest): CompletableFuture<HudHandle?> {
-        if (Bukkit.isPrimaryThread()) {
-            return CompletableFuture.completedFuture(submitScoreboard(playerId, request))
-        }
+        return submitOnPlayerScheduler(plugin, playerId) { submitScoreboard(playerId, request) }
+    }
+
+    private fun submitOnPlayerScheduler(
+        plugin: Plugin,
+        playerId: UUID,
+        submit: () -> HudHandle?
+    ): CompletableFuture<HudHandle?> {
+        val player = Bukkit.getPlayer(playerId) ?: return CompletableFuture.completedFuture(null)
+        if (!player.isOnline) return CompletableFuture.completedFuture(null)
 
         val future = CompletableFuture<HudHandle?>()
-        Bukkit.getScheduler().runTask(plugin, Runnable {
+        val scheduled = FoliaHudScheduler(plugin).runPlayer(player, {
             try {
-                future.complete(submitScoreboard(playerId, request))
+                future.complete(submit())
             } catch (t: Throwable) {
                 future.completeExceptionally(t)
             }
+        }, retired = {
+            future.complete(null)
         })
+        if (scheduled == null && !future.isDone) {
+            future.complete(null)
+        }
         return future
     }
 }

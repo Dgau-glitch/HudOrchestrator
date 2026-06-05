@@ -268,8 +268,7 @@ class HudOrchestratorService(
             expireTick = nowTick + max(effectiveRequest.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        val bypassRateLimit = state.scoreboardQueue.hasPendingCoalesceTarget(entry) ||
-            state.hasActiveScoreboardSource(effectiveRequest.meta.sourceId, nowTick)
+        val bypassRateLimit = shouldBypassScoreboardRateLimit(state, effectiveRequest, entry, nowTick)
         if (!bypassRateLimit && !isAccepted(playerId, state, HudChannel.SCOREBOARD, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks, nowTick)) return@runOnPlayerThread null
         val result = state.scoreboardQueue.offer(entry)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
@@ -285,6 +284,21 @@ class HudOrchestratorService(
         return@runOnPlayerThread entry.handle
     }
 
+
+    private fun shouldBypassScoreboardRateLimit(
+        state: PlayerHudState,
+        request: ScoreboardRequest,
+        entry: QueueEntry.Scoreboard,
+        nowTick: Long
+    ): Boolean {
+        val meta = request.meta
+        val ownerCoalesceRefresh = request.ownerMode &&
+            meta.policy == DeliveryPolicy.COALESCE &&
+            (meta.dedupKey != null || meta.replaceGroup != null)
+        return ownerCoalesceRefresh ||
+            state.scoreboardQueue.hasPendingCoalesceTarget(entry) ||
+            state.hasActiveScoreboardSource(meta.sourceId, nowTick)
+    }
 
     override fun submitActionBarAsync(playerId: UUID, request: ActionBarRequest): CompletableFuture<HudHandle?> {
         return scheduleSubmitAsync(playerId) { submitActionBar(playerId, request) }

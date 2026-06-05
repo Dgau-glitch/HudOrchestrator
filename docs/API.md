@@ -109,6 +109,8 @@ val handle = hud.submitTitle(player.uniqueId, request)
 
 Folia-важно: renderer не вызывает `ScoreboardManager#getNewScoreboard()`, потому что на Folia этот путь может бросать `UnsupportedOperationException`. Вместо этого HudOrchestrator использует текущий `player.scoreboard` и управляет только своим objective `hud_orchestrator` и временными team/entry-строками. Поэтому для production лучше направлять все sidebar-scoreboard потоки через HudOrchestrator, чтобы другие плагины не перетирали тот же display slot или objective. При очистке канала сервис удаляет свой objective/строки на entity thread игрока.
 
+Для постоянных scoreboard-владельцев используйте `ownerMode=true` + `COALESCE` + стабильный `dedupKey`/`replaceGroup`. Такой поток считается state-refresh, поэтому HudOrchestrator не применяет к нему `sourceCooldownTicks`: иначе первый пустой/промежуточный кадр или частые retry могли бы оставить игрока без sidebar до следующего cooldown window. Backpressure всё равно остаётся через coalesce, max queue size и priority-owner rules.
+
 ```kotlin
 val request = ScoreboardRequest(
     title = Component.text("§6Артефакт"),

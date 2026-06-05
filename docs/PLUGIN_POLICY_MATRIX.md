@@ -53,6 +53,7 @@
 - Постоянный владелец scoreboard: `ArtifactItems` (`ownerMode=true`, `priority=75`).
 - Временные критичные scoreboard-события `QuestCore`: `PREEMPT`, `priority=90`.
 - На Folia не используйте fallback через `ScoreboardManager#getNewScoreboard()`: HudOrchestrator рендерит sidebar на текущем `player.scoreboard` и владеет только objective `hud_orchestrator`. Если нужен стабильный sidebar без конфликтов, остальные плагины должны отдавать scoreboard-сообщения через HudOrchestrator или не трогать `DisplaySlot.SIDEBAR`.
+- Для `ArtifactItems:scoreboard` держите `ownerMode=true`, `COALESCE` и стабильный `dedupKey`: HudOrchestrator трактует такие заявки как refresh постоянного owner-state и не режет их `sourceCooldownTicks`, чтобы scoreboard не пропадал из-за retry/первичного кадра.
 
 ## 5) Готовые примеры метаданных
 

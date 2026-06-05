@@ -1,6 +1,6 @@
 # HudOrchestrator API (актуальная версия)
 
-Документ для интеграторов Paper/Spigot/Purpur: как безопасно отправлять `ACTION_BAR`, `TITLE`, `SCOREBOARD` без конфликтов между плагинами.
+Документ для интеграторов Folia/Paper-совместимых серверов: как безопасно отправлять `ACTION_BAR`, `TITLE`, `SCOREBOARD` без конфликтов между плагинами.
 
 ## 1. Получение сервиса
 
@@ -23,15 +23,17 @@ val hud = registration?.provider ?: return
 
 ## 3. Threading (важно)
 
-В актуальной версии `HudOrchestratorService` безопасно обрабатывает off-thread вызовы `submit*`: запрос маршалится на main thread.
+В Folia нет единого "main thread" для операций над игроком. `HudOrchestratorService` сам переносит `submit*`-мутации на `player.scheduler` конкретного online-игрока. Если игрок offline или его entity scheduler retired, submit вернёт `null`.
 
-Для явной и предсказуемой интеграции всё равно рекомендуется использовать:
+Рекомендуемый современный вариант — async API без прямой зависимости интегратора от Bukkit/Folia scheduler:
 
 ```kotlin
-hud.submitActionBarThreadSafe(plugin, player.uniqueId, request)
-hud.submitTitleThreadSafe(plugin, player.uniqueId, request)
-hud.submitScoreboardThreadSafe(plugin, player.uniqueId, request)
+hud.submitActionBarAsync(player.uniqueId, request)
+hud.submitTitleAsync(player.uniqueId, request)
+hud.submitScoreboardAsync(player.uniqueId, request)
 ```
+
+Legacy helpers `submit*ThreadSafe(plugin, ...)` оставлены для совместимости, но теперь просто делегируют в `submit*Async(...)`; планирование остаётся ответственностью реализации HudOrchestrator.
 
 ## 4. ActionBar: рекомендуемый профиль
 
@@ -227,8 +229,9 @@ source-overrides:
 ## 12. Async пример end-to-end
 
 ```kotlin
-plugin.server.scheduler.runTaskAsynchronously(plugin, Runnable {
-    val dto = loadQuestStateFromStorage(player.uniqueId)
+CompletableFuture.supplyAsync {
+    loadQuestStateFromStorage(player.uniqueId)
+}.thenCompose { dto ->
 
     val request = TitleRequest(
         title = Component.text("Новая цель"),
@@ -244,11 +247,10 @@ plugin.server.scheduler.runTaskAsynchronously(plugin, Runnable {
         )
     )
 
-    hud.submitTitleThreadSafe(plugin, player.uniqueId, request)
-        .thenAccept { handle ->
-            if (handle == null) plugin.logger.fine("HudOrchestrator backpressure for ${player.uniqueId}")
-        }
-})
+    hud.submitTitleAsync(player.uniqueId, request)
+}.thenAccept { handle ->
+    if (handle == null) plugin.logger.fine("HudOrchestrator backpressure for ${player.uniqueId}")
+}
 ```
 
 ## 13. Операционный checklist

@@ -8,10 +8,6 @@ import org.bukkit.event.Listener
 import org.bukkit.event.server.PluginDisableEvent
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
-import org.bukkit.scoreboard.Criteria
-import org.bukkit.scoreboard.DisplaySlot
-import org.bukkit.scoreboard.Objective
-import net.kyori.adventure.text.Component
 import ru.fatumsoft.hudOrchestrator.api.ActionBarRequest
 import ru.fatumsoft.hudOrchestrator.api.DeliveryPolicy
 import ru.fatumsoft.hudOrchestrator.api.HudChannel
@@ -22,8 +18,8 @@ import ru.fatumsoft.hudOrchestrator.api.ScoreboardRequest
 import ru.fatumsoft.hudOrchestrator.api.TitleRequest
 import ru.fatumsoft.hudOrchestrator.scheduler.FoliaHudScheduler
 import ru.fatumsoft.hudOrchestrator.scheduler.ScheduledHudTask
-import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
@@ -281,6 +277,39 @@ class HudOrchestratorService(
         queueLog("ENQUEUE channel=SCOREBOARD player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         processPlayerNow(playerId, player, state)
         return@runOnPlayerThread entry.handle
+    }
+
+
+    override fun submitActionBarAsync(playerId: UUID, request: ActionBarRequest): CompletableFuture<HudHandle?> {
+        return scheduleSubmitAsync(playerId) { submitActionBar(playerId, request) }
+    }
+
+    override fun submitTitleAsync(playerId: UUID, request: TitleRequest): CompletableFuture<HudHandle?> {
+        return scheduleSubmitAsync(playerId) { submitTitle(playerId, request) }
+    }
+
+    override fun submitScoreboardAsync(playerId: UUID, request: ScoreboardRequest): CompletableFuture<HudHandle?> {
+        return scheduleSubmitAsync(playerId) { submitScoreboard(playerId, request) }
+    }
+
+    private fun scheduleSubmitAsync(playerId: UUID, submit: () -> HudHandle?): CompletableFuture<HudHandle?> {
+        val player = Bukkit.getPlayer(playerId) ?: return CompletableFuture.completedFuture(null)
+        if (!player.isOnline) return CompletableFuture.completedFuture(null)
+
+        val future = CompletableFuture<HudHandle?>()
+        val scheduled = scheduler.runPlayer(player, {
+            try {
+                future.complete(submit())
+            } catch (throwable: Throwable) {
+                future.completeExceptionally(throwable)
+            }
+        }, retired = {
+            future.complete(null)
+        })
+        if (scheduled == null && !future.isDone) {
+            future.complete(null)
+        }
+        return future
     }
 
     override fun cancel(handle: HudHandle): Boolean {
@@ -617,8 +646,8 @@ private class PlayerHudState(
         actionBarDominancePriority = Int.MIN_VALUE
         scoreboardOwner = null
         scoreboardView = null
-        if (player != null && previousScoreboard != null && player.scoreboard != previousScoreboard) {
-            player.scoreboard = previousScoreboard!!
+        if (player != null) {
+            PlayerHudRenderer.restoreScoreboard(player, previousScoreboard)
         }
         previousScoreboard = null
     }
@@ -635,7 +664,7 @@ private class PlayerHudState(
             val expireAtTick = nowTick + max(selected.request.meta.maxShowTicks.toLong(), 1L)
             activeActionBar = ActiveEntry(selected, holdUntilTick, expireAtTick, nowTick)
             actionBarIdleSinceTick = null
-            selected.send(player)
+            PlayerHudRenderer.sendActionBar(player, selected.request)
             if (selected.request.meta.stickinessTicks > 0) {
                 actionBarStickySource = selected.request.meta.sourceId
                 actionBarStickyUntilTick = nowTick + selected.request.meta.stickinessTicks
@@ -650,7 +679,7 @@ private class PlayerHudState(
             val active = activeActionBar ?: return
             val resendEvery = max(active.entry.request.resendIntervalTicks, 1)
             if (nowTick - active.lastSendTick >= resendEvery) {
-                active.entry.send(player)
+                PlayerHudRenderer.sendActionBar(player, active.entry.request)
                 active.lastSendTick = nowTick
             }
         }
@@ -699,7 +728,7 @@ private class PlayerHudState(
             val minTicks = max(selected.request.meta.minShowTicks, selected.request.fadeInTicks + selected.request.stayTicks)
             val maxTicks = max(selected.request.meta.maxShowTicks, minTicks + selected.request.fadeOutTicks)
             activeTitle = ActiveEntry(selected, nowTick + minTicks, nowTick + maxTicks, nowTick)
-            selected.send(player)
+            PlayerHudRenderer.showTitle(player, selected.request)
             queueLog("DISPATCH channel=TITLE player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
         }
     }
@@ -724,9 +753,9 @@ private class PlayerHudState(
                     nowTick
                 )
                 if (scoreboardView == null) {
-                    previousScoreboard = player.scoreboard
+                    previousScoreboard = PlayerHudRenderer.currentScoreboard(player)
                 }
-                scoreboardView = ScoreboardRenderer.render(player, selected.request, scoreboardView)
+                scoreboardView = PlayerHudRenderer.renderScoreboard(player, selected.request, scoreboardView)
                 queueLog("DISPATCH channel=SCOREBOARD player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
             }
         }
@@ -976,7 +1005,6 @@ private sealed class QueueEntry(
     val seq: Long
 ) {
     abstract fun requestMeta() : ru.fatumsoft.hudOrchestrator.api.HudRequestMeta
-    abstract fun send(player: Player)
     fun priority(): Int = requestMeta().priority
     fun sourceId(): String = requestMeta().sourceId
     fun sourceBelongsToPlugin(pluginName: String): Boolean = sourceBelongsToPlugin(sourceId(), pluginName)
@@ -989,9 +1017,6 @@ private sealed class QueueEntry(
         seq: Long
     ) : QueueEntry(handle, createdTick, expireTick, seq) {
         override fun requestMeta() = request.meta
-        override fun send(player: Player) {
-            player.sendActionBar(request.content)
-        }
     }
 
     class Title(
@@ -1002,19 +1027,6 @@ private sealed class QueueEntry(
         seq: Long
     ) : QueueEntry(handle, createdTick, expireTick, seq) {
         override fun requestMeta() = request.meta
-        override fun send(player: Player) {
-            player.showTitle(
-                net.kyori.adventure.title.Title.title(
-                    request.title,
-                    request.subtitle,
-                    net.kyori.adventure.title.Title.Times.times(
-                        Duration.ofMillis((request.fadeInTicks * 50L).coerceAtLeast(0L)),
-                        Duration.ofMillis((request.stayTicks * 50L).coerceAtLeast(0L)),
-                        Duration.ofMillis((request.fadeOutTicks * 50L).coerceAtLeast(0L))
-                    )
-                )
-            )
-        }
     }
 
     class Scoreboard(
@@ -1025,96 +1037,12 @@ private sealed class QueueEntry(
         seq: Long
     ) : QueueEntry(handle, createdTick, expireTick, seq) {
         override fun requestMeta() = request.meta
-
-        override fun send(player: Player) {
-            ScoreboardRenderer.render(player, request, previous = null)
-        }
     }
 }
 
 private fun sourceBelongsToPlugin(sourceId: String, pluginName: String): Boolean {
     return sourceId.equals(pluginName, ignoreCase = true) ||
         sourceId.startsWith("$pluginName:", ignoreCase = true)
-}
-
-private data class ScoreboardViewState(
-    val board: org.bukkit.scoreboard.Scoreboard,
-    val objective: Objective,
-    var sidebar: Boolean,
-    var title: Component,
-    val linesByIndex: MutableMap<Int, Component>
-)
-
-private object ScoreboardRenderer {
-    private const val OBJECTIVE_NAME = "hud_orchestrator"
-    private val ENTRIES = Array(15) { i -> "§${(i + 1).toString(16)}" }
-
-    fun render(player: Player, request: ScoreboardRequest, previous: ScoreboardViewState?): ScoreboardViewState {
-        val manager = Bukkit.getScoreboardManager()
-        val board = previous?.board
-            ?: player.scoreboard.takeIf { it != manager.mainScoreboard }
-            ?: manager.newScoreboard
-        val objective = previous?.objective ?: ensureObjective(board, request.title)
-
-        if (previous == null || previous.title != request.title) {
-            objective.displayName(request.title)
-        }
-        val sidebar = request.sidebar
-        val slot = if (sidebar) DisplaySlot.SIDEBAR else DisplaySlot.PLAYER_LIST
-        if (previous == null || previous.sidebar != sidebar) {
-            objective.displaySlot = slot
-        }
-
-        val state = previous ?: ScoreboardViewState(
-            board = board,
-            objective = objective,
-            sidebar = sidebar,
-            title = request.title,
-            linesByIndex = HashMap(16)
-        )
-        state.sidebar = sidebar
-        state.title = request.title
-
-        val requested = request.lines.take(15)
-        for (index in 0 until 15) {
-            val old = state.linesByIndex[index]
-            val next = requested.getOrNull(index)
-            if (next == null) {
-                if (old != null) {
-                    val entry = ENTRIES[index]
-                    board.resetScores(entry)
-                    board.getTeam(entry)?.unregister()
-                    state.linesByIndex.remove(index)
-                }
-                continue
-            }
-
-            if (old == next) continue
-
-            val entry = ENTRIES[index]
-            val score = 15 - index
-            objective.getScore(entry).score = score
-            val team = getOrCreateTeam(board, entry)
-            team.addEntry(entry)
-            team.prefix(next)
-            state.linesByIndex[index] = next
-        }
-
-        if (player.scoreboard !== board) {
-            player.scoreboard = board
-        }
-        return state
-    }
-
-    private fun ensureObjective(scoreboard: org.bukkit.scoreboard.Scoreboard, title: Component): Objective {
-        val existing = scoreboard.getObjective(OBJECTIVE_NAME)
-        if (existing != null) return existing
-        return scoreboard.registerNewObjective(OBJECTIVE_NAME, Criteria.DUMMY, title)
-    }
-
-    private fun getOrCreateTeam(scoreboard: org.bukkit.scoreboard.Scoreboard, name: String): org.bukkit.scoreboard.Team {
-        return scoreboard.getTeam(name) ?: scoreboard.registerNewTeam(name)
-    }
 }
 
 private class HudMetrics {

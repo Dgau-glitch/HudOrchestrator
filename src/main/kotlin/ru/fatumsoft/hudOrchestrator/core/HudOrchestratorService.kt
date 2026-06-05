@@ -268,7 +268,8 @@ class HudOrchestratorService(
             expireTick = nowTick + max(effectiveRequest.meta.ttlTicks, 1),
             seq = sequence.incrementAndGet()
         )
-        val bypassRateLimit = state.scoreboardQueue.hasPendingCoalesceTarget(entry)
+        val bypassRateLimit = state.scoreboardQueue.hasPendingCoalesceTarget(entry) ||
+            state.hasActiveScoreboardSource(effectiveRequest.meta.sourceId, nowTick)
         if (!bypassRateLimit && !isAccepted(playerId, state, HudChannel.SCOREBOARD, effectiveRequest.meta.sourceId, effectiveRequest.meta.sourceCooldownTicks, nowTick)) return@runOnPlayerThread null
         val result = state.scoreboardQueue.offer(entry)
         if (result == OfferResult.DROPPED_BY_OVERFLOW) {
@@ -536,6 +537,11 @@ private class PlayerHudState(
         return nowTick - idleSince >= actionBarFallbackIdleGraceTicks && nowTick - entry.createdTick >= actionBarFallbackIdleGraceTicks
     }
 
+    fun hasActiveScoreboardSource(sourceId: String, nowTick: Long): Boolean {
+        val active = activeScoreboard ?: return false
+        return !active.isExpired(nowTick) && active.entry.sourceId() == sourceId
+    }
+
     fun rememberActionBarDominance(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta, nowTick: Long) {
         if (meta.dominanceTicks <= 0) return
         val untilTick = nowTick + max(meta.maxShowTicks, 1) + meta.dominanceTicks
@@ -766,7 +772,7 @@ private class PlayerHudState(
             PlayerHudRenderer.ensureScoreboardVisible(player, scoreboardView)
         }
 
-        val selected = selectNext(scoreboardQueue, activeScoreboard, nowTick)
+        val selected = selectNextScoreboard(nowTick)
         if (selected != null && shouldActivateScoreboard(selected, activeScoreboard, nowTick)) {
             if (selected.request.ownerMode) {
                 scoreboardOwner = selected.request.meta.sourceId
@@ -787,6 +793,16 @@ private class PlayerHudState(
                 queueLog("DISPATCH channel=SCOREBOARD player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority} ownerMode=${selected.request.ownerMode}")
             }
         }
+    }
+
+    private fun selectNextScoreboard(nowTick: Long): QueueEntry.Scoreboard? {
+        val current = activeScoreboard
+        val best = scoreboardQueue.bestCandidate(nowTick) ?: return null
+        if (current != null && !current.isExpired(nowTick) && best.sourceId() == current.entry.sourceId()) {
+            scoreboardQueue.remove(best.handle.id)
+            return best
+        }
+        return selectNext(scoreboardQueue, current, nowTick)
     }
 
     private fun shouldActivateScoreboard(selected: QueueEntry.Scoreboard, current: ActiveEntry<QueueEntry.Scoreboard>?, nowTick: Long): Boolean {

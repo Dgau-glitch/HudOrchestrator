@@ -65,6 +65,7 @@ class HudOrchestratorService(
 
     private val states = ConcurrentHashMap<UUID, PlayerHudState>()
     private val playerTasks = ConcurrentHashMap<UUID, ScheduledHudTask>()
+    private val playerRefs = ConcurrentHashMap<UUID, Player>()
     private val sequence = AtomicLong(0L)
     private val scheduler = FoliaHudScheduler(plugin)
     private val warnedInvalidSources = ConcurrentHashMap.newKeySet<String>()
@@ -97,12 +98,13 @@ class HudOrchestratorService(
     }
 
     fun shutdown() {
+        states.keys.toList().forEach { playerId ->
+            cleanupPlayer(playerId, restoreVisuals = true)
+        }
         playerTasks.values.forEach { it.cancel() }
         playerTasks.clear()
-        states.forEach { (playerId, state) ->
-            clearVisualStateOnPlayerThread(playerId, state)
-        }
-        states.clear()
+        playerRefs.clear()
+        scheduler.cancelAll()
     }
 
     @EventHandler
@@ -119,12 +121,12 @@ class HudOrchestratorService(
 
     @EventHandler
     fun onPlayerQuit(event: PlayerQuitEvent) {
-        clearPlayer(event.player.uniqueId)
+        cleanupPlayer(event.player.uniqueId, event.player, restoreVisuals = true)
     }
 
     @EventHandler
     fun onPlayerKick(event: PlayerKickEvent) {
-        clearPlayer(event.player.uniqueId)
+        cleanupPlayer(event.player.uniqueId, event.player, restoreVisuals = true)
     }
 
     private fun <T> runOnPlayerThread(playerId: UUID, actionName: String, block: (Player) -> T): T? {
@@ -176,6 +178,7 @@ class HudOrchestratorService(
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
+        playerRefs[playerId] = player
         val state = playerState(playerId)
         val nowTick = state.currentTick()
         val entry = QueueEntry.ActionBar(
@@ -226,6 +229,7 @@ class HudOrchestratorService(
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
+        playerRefs[playerId] = player
         val state = playerState(playerId)
         val nowTick = state.currentTick()
         val entry = QueueEntry.Title(
@@ -255,6 +259,7 @@ class HudOrchestratorService(
         val effectiveMeta = applyOverrides(request.meta)
         val effectiveRequest = request.copy(meta = effectiveMeta)
         validateSourceId(effectiveMeta.sourceId)
+        playerRefs[playerId] = player
         val state = playerState(playerId)
         val nowTick = state.currentTick()
         val entry = QueueEntry.Scoreboard(
@@ -334,22 +339,29 @@ class HudOrchestratorService(
     }
 
     override fun clearPlayer(playerId: UUID) {
-        val state = states.remove(playerId)
-        playerTasks.remove(playerId)?.cancel()
-        if (state != null) clearVisualStateOnPlayerThread(playerId, state)
+        cleanupPlayer(playerId, restoreVisuals = true)
     }
 
     override fun metricsSnapshot(): HudMetricsSnapshot = metrics.snapshot()
 
 
-    private fun clearVisualStateOnPlayerThread(playerId: UUID, state: PlayerHudState) {
-        val player = Bukkit.getPlayer(playerId)
-        if (player == null || !player.isOnline) return
-        scheduler.runPlayer(player, {
+    private fun cleanupPlayer(playerId: UUID, player: Player? = playerRefs[playerId], restoreVisuals: Boolean) {
+        val state = states.remove(playerId)
+        playerTasks.remove(playerId)?.cancel()
+        playerRefs.remove(playerId)
+        if (state == null) return
+        if (!restoreVisuals || player == null) return
+
+        val scheduled = scheduler.runPlayer(player, {
             state.clearVisualState(player)
         }, retired = {
-            state.clearVisualState(null)
+            // EntityScheduler guarantees retired callbacks run on the owning region,
+            // but visual restoration is impossible once the player entity is retired.
         })
+        if (scheduled == null) {
+            // Scheduler already retired: internal maps are cleaned and no player API is touched.
+            return
+        }
     }
 
     private fun ensurePlayerTask(playerId: UUID, player: Player) {
@@ -367,8 +379,9 @@ class HudOrchestratorService(
                 processPlayerTick(playerId, player, state)
             },
             retired = {
-                states.remove(playerId)?.clearVisualState(null)
+                states.remove(playerId)
                 playerTasks.remove(playerId)?.cancel()
+                playerRefs.remove(playerId)
             }
         )
         if (scheduled != null) {
@@ -376,6 +389,7 @@ class HudOrchestratorService(
             if (existing != null) scheduled.cancel()
         } else {
             states.remove(playerId)
+            playerRefs.remove(playerId)
         }
     }
 
@@ -395,6 +409,7 @@ class HudOrchestratorService(
         if (!player.isOnline) {
             states.remove(playerId)
             playerTasks.remove(playerId)?.cancel()
+            playerRefs.remove(playerId)
             return
         }
         try {
@@ -408,6 +423,7 @@ class HudOrchestratorService(
             state.clearVisualState(player)
             states.remove(playerId)
             playerTasks.remove(playerId)?.cancel()
+            playerRefs.remove(playerId)
         }
     }
 

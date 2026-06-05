@@ -39,6 +39,10 @@ Legacy helpers `submit*ThreadSafe(plugin, ...)` оставлены для сов
 
 Внутри сервиса TTL, cooldown, `minShowTicks`, `maxShowTicks`, `stickinessTicks` и `dominanceTicks` считаются не через глобальный `Bukkit.getCurrentTick()`, а через локальный счётчик `PlayerHudState`. Он увеличивается только per-player repeating task этого игрока. Это соответствует Folia-модели, где регионы тикают независимо, и исключает зависимость HUD-очереди игрока от глобального tick counter.
 
+### Cleanup lifecycle
+
+`clearPlayer`, quit/kick cleanup и shutdown не вызывают визуальный restore напрямую из произвольного потока. Если у сервиса есть ссылка на online `Player`, восстановление scoreboard планируется через `player.scheduler`; если entity scheduler retired, внутренние maps/tasks очищаются без обращения к player API.
+
 ## 4. ActionBar: рекомендуемый профиль
 
 ```kotlin

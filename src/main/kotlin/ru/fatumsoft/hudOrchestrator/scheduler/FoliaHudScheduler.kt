@@ -33,7 +33,7 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
     override fun runPlayer(player: Player, task: () -> Unit, retired: (() -> Unit)?): ScheduledHudTask? {
         if (Bukkit.isOwnedByCurrentRegion(player)) {
             task()
-            return null
+            return ScheduledHudTask { }
         }
         val scheduled = player.scheduler.run(plugin, { task() }, retired?.let { Runnable { it() } })
         return scheduled?.asHudTask()

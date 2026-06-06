@@ -227,11 +227,11 @@ source-overrides:
 
 ## 11.2 Hard dominance window (`dominanceTicks`)
 
-`dominanceTicks` — отдельный режим в `HudRequestMeta` для ActionBar.
+`dominanceTicks` — отдельный режим в `HudRequestMeta` для strict-priority окон в `ACTION_BAR` и `TITLE`.
 
 Если источник отправил или поставил в очередь сообщение с `dominanceTicks > 0`, HudOrchestrator держит защитное окно для этого приоритета.
-Низкоприоритетные кандидаты блокируются не только во время показа, но и между обновлениями доминирующего потока. Это убирает “мигание”
-низкоприоритетных fallback-сообщений поверх `ArtifactItems`/`QuestCore`.
+Низкоприоритетные кандидаты блокируются не только во время показа, но и между обновлениями доминирующего потока. Для `TITLE` применяется та же strict-очередь: пока dominance window активен, более низкий title-кандидат не dispatch'ится даже если активный title уже истёк. Это убирает “мигание”
+низкоприоритетных сообщений поверх `ArtifactItems`/`QuestCore`. При принятии более приоритетной заявки HudOrchestrator также удаляет pending-заявки с меньшим priority в том же канале, чтобы старый `ArtifactItems` не всплывал сразу после `QuestCore`. Для источников с `priority >= 90` и `dominanceTicks > 0` дополнительно включается PacketEvents firewall: внешние `ACTION_BAR`/`TITLE` packets для этого игрока временно cancel'ятся, а packets, отправленные самим HudOrchestrator, пропускаются через internal allowance.
 
 
 ## 11.3 Строгая защита приоритета для `DROP_IF_BUSY`

@@ -15,6 +15,7 @@ import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import ru.fatumsoft.hudOrchestrator.api.ActionBarRequest
 import ru.fatumsoft.hudOrchestrator.api.ScoreboardRequest
+import ru.fatumsoft.hudOrchestrator.api.HudChannel
 import ru.fatumsoft.hudOrchestrator.api.TitleRequest
 import java.time.Duration
 
@@ -38,22 +39,26 @@ internal object PlayerHudRenderer {
 
     fun sendActionBar(player: Player, request: ActionBarRequest) {
         requireEntityThread(player)
-        player.sendActionBar(request.content)
+        HudPacketFirewall.allowHudPacket(player.uniqueId, HudChannel.ACTION_BAR) {
+            player.sendActionBar(request.content)
+        }
     }
 
     fun showTitle(player: Player, request: TitleRequest) {
         requireEntityThread(player)
-        player.showTitle(
-            Title.title(
-                request.title,
-                request.subtitle,
-                Title.Times.times(
-                    Duration.ofMillis((request.fadeInTicks * 50L).coerceAtLeast(0L)),
-                    Duration.ofMillis((request.stayTicks * 50L).coerceAtLeast(0L)),
-                    Duration.ofMillis((request.fadeOutTicks * 50L).coerceAtLeast(0L))
+        HudPacketFirewall.allowHudPacket(player.uniqueId, HudChannel.TITLE) {
+            player.showTitle(
+                Title.title(
+                    request.title,
+                    request.subtitle,
+                    Title.Times.times(
+                        Duration.ofMillis((request.fadeInTicks * 50L).coerceAtLeast(0L)),
+                        Duration.ofMillis((request.stayTicks * 50L).coerceAtLeast(0L)),
+                        Duration.ofMillis((request.fadeOutTicks * 50L).coerceAtLeast(0L))
+                    )
                 )
             )
-        )
+        }
     }
 
     fun ensureScoreboardVisible(player: Player, state: ScoreboardViewState?) {

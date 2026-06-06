@@ -94,10 +94,12 @@ class HudOrchestratorService(
     }
 
     fun start() {
+        HudPacketFirewall.register()
         plugin.server.pluginManager.registerEvents(this, plugin)
     }
 
     fun shutdown() {
+        HudPacketFirewall.unregister()
         states.keys.toList().forEach { playerId ->
             cleanupPlayer(playerId, restoreVisuals = true)
         }
@@ -210,12 +212,13 @@ class HudOrchestratorService(
         ensurePlayerTask(playerId, player)
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        rememberStrictOutboundSuppression(playerId, HudChannel.ACTION_BAR, effectiveRequest.meta, max(effectiveRequest.meta.maxShowTicks, 1))
         state.rememberActionBarPriorityFloor(effectiveRequest.meta, nowTick)
         state.rememberActionBarDominance(effectiveRequest.meta, nowTick)
-        val removedFallbacks = state.dropLowerPriorityActionBarFallbacks(effectiveRequest.meta.priority)
-        if (removedFallbacks > 0) {
-            repeat(removedFallbacks) { metrics.droppedByPolicy.increment() }
-            queueLog("DROP channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} reason=lower_priority_fallback_superseded removed=$removedFallbacks priority=${effectiveRequest.meta.priority}")
+        val removedLowerPriority = state.dropLowerPriorityActionBarRequests(effectiveRequest.meta.priority)
+        if (removedLowerPriority > 0) {
+            repeat(removedLowerPriority) { metrics.droppedByPolicy.increment() }
+            queueLog("DROP channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} reason=lower_priority_superseded removed=$removedLowerPriority priority=${effectiveRequest.meta.priority}")
         }
         queueLog("ENQUEUE channel=ACTION_BAR player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         if (effectiveRequest.meta.policy != DeliveryPolicy.DROP_IF_BUSY) {
@@ -249,9 +252,31 @@ class HudOrchestratorService(
         ensurePlayerTask(playerId, player)
         metrics.submitted.increment()
         if (result == OfferResult.REPLACED_BY_COALESCE) metrics.replacedByCoalesce.increment()
+        rememberStrictOutboundSuppression(
+            playerId,
+            HudChannel.TITLE,
+            effectiveRequest.meta,
+            max(effectiveRequest.meta.maxShowTicks, effectiveRequest.fadeInTicks + effectiveRequest.stayTicks + effectiveRequest.fadeOutTicks)
+        )
+        state.rememberTitlePriorityFloor(effectiveRequest.meta, nowTick)
+        val removedLowerPriority = state.dropLowerPriorityTitleRequests(effectiveRequest.meta.priority)
+        if (removedLowerPriority > 0) {
+            repeat(removedLowerPriority) { metrics.droppedByPolicy.increment() }
+            queueLog("DROP channel=TITLE player=$playerId source=${effectiveRequest.meta.sourceId} reason=lower_priority_superseded removed=$removedLowerPriority priority=${effectiveRequest.meta.priority}")
+        }
         queueLog("ENQUEUE channel=TITLE player=$playerId source=${effectiveRequest.meta.sourceId} policy=${effectiveRequest.meta.policy} priority=${effectiveRequest.meta.priority} result=$result")
         processPlayerNow(playerId, player, state)
         return@runOnPlayerThread entry.handle
+    }
+
+    private fun rememberStrictOutboundSuppression(
+        playerId: UUID,
+        channel: HudChannel,
+        meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta,
+        visibleTicks: Int
+    ) {
+        if (meta.priority < STRICT_DOMINANCE_PRIORITY || meta.dominanceTicks <= 0) return
+        HudPacketFirewall.suppress(playerId, channel, max(visibleTicks, 1).toLong() + meta.dominanceTicks.toLong())
     }
 
     override fun submitScoreboard(playerId: UUID, request: ScoreboardRequest): HudHandle? = runOnPlayerThread(playerId, "submitScoreboard") { player ->
@@ -474,6 +499,7 @@ class HudOrchestratorService(
     }
 
     companion object {
+        private const val STRICT_DOMINANCE_PRIORITY = 90
         private val SOURCE_PATTERN = Regex("^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*$")
     }
 }
@@ -497,6 +523,8 @@ private class PlayerHudState(
     private var actionBarStickyPriority: Int = Int.MIN_VALUE
     private var actionBarDominanceUntilTick: Long = 0L
     private var actionBarDominancePriority: Int = Int.MIN_VALUE
+    private var titleDominanceUntilTick: Long = 0L
+    private var titleDominancePriority: Int = Int.MIN_VALUE
     private var actionBarIdleSinceTick: Long? = null
     private var scoreboardOwner: String? = null
     private var scoreboardView: ScoreboardViewState? = null
@@ -525,7 +553,9 @@ private class PlayerHudState(
             activeScoreboard == null &&
             actionBarQueue.isEmpty() &&
             titleQueue.isEmpty() &&
-            scoreboardQueue.isEmpty()
+            scoreboardQueue.isEmpty() &&
+            localTick >= actionBarDominanceUntilTick &&
+            localTick >= titleDominanceUntilTick
     }
 
     fun isActionBarChannelFree(nowTick: Long): Boolean {
@@ -569,21 +599,52 @@ private class PlayerHudState(
 
     fun rememberActionBarPriorityFloor(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta, nowTick: Long) {
         if (meta.policy == DeliveryPolicy.DROP_IF_BUSY) return
-        val guardTicks = max(max(meta.dominanceTicks, meta.stickinessTicks), DEFAULT_PRIORITY_FLOOR_GUARD_TICKS)
-        val untilTick = nowTick + max(meta.maxShowTicks, 1) + guardTicks
-        if (nowTick >= actionBarDominanceUntilTick) {
-            actionBarDominancePriority = meta.priority
+        rememberDominanceFloor(
+            nowTick = nowTick,
+            meta = meta,
+            currentUntil = actionBarDominanceUntilTick,
+            currentPriority = actionBarDominancePriority
+        ) { untilTick, priority ->
             actionBarDominanceUntilTick = untilTick
-            return
+            actionBarDominancePriority = priority
         }
-        actionBarDominanceUntilTick = max(actionBarDominanceUntilTick, untilTick)
-        actionBarDominancePriority = max(actionBarDominancePriority, meta.priority)
     }
 
-    fun dropLowerPriorityActionBarFallbacks(priority: Int): Int {
-        return actionBarQueue.removeWhere { entry ->
-            entry.request.meta.policy == DeliveryPolicy.DROP_IF_BUSY && entry.priority() < priority
+    fun rememberTitlePriorityFloor(meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta, nowTick: Long) {
+        if (meta.policy == DeliveryPolicy.DROP_IF_BUSY) return
+        rememberDominanceFloor(
+            nowTick = nowTick,
+            meta = meta,
+            currentUntil = titleDominanceUntilTick,
+            currentPriority = titleDominancePriority
+        ) { untilTick, priority ->
+            titleDominanceUntilTick = untilTick
+            titleDominancePriority = priority
         }
+    }
+
+    private fun rememberDominanceFloor(
+        nowTick: Long,
+        meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta,
+        currentUntil: Long,
+        currentPriority: Int,
+        apply: (Long, Int) -> Unit
+    ) {
+        val guardTicks = max(max(meta.dominanceTicks, meta.stickinessTicks), DEFAULT_PRIORITY_FLOOR_GUARD_TICKS)
+        val untilTick = nowTick + max(meta.maxShowTicks, 1) + guardTicks
+        if (nowTick >= currentUntil) {
+            apply(untilTick, meta.priority)
+            return
+        }
+        apply(max(currentUntil, untilTick), max(currentPriority, meta.priority))
+    }
+
+    fun dropLowerPriorityActionBarRequests(priority: Int): Int {
+        return actionBarQueue.removeWhere { entry -> entry.priority() < priority }
+    }
+
+    fun dropLowerPriorityTitleRequests(priority: Int): Int {
+        return titleQueue.removeWhere { entry -> entry.priority() < priority }
     }
 
     data class ActionBarDebugState(
@@ -688,6 +749,8 @@ private class PlayerHudState(
         actionBarStickyPriority = Int.MIN_VALUE
         actionBarDominanceUntilTick = 0L
         actionBarDominancePriority = Int.MIN_VALUE
+        titleDominanceUntilTick = 0L
+        titleDominancePriority = Int.MIN_VALUE
         scoreboardOwner = null
         val view = scoreboardView
         scoreboardView = null
@@ -767,7 +830,7 @@ private class PlayerHudState(
         val current = activeTitle
         if (current != null && current.isExpired(nowTick)) activeTitle = null
 
-        val selected = selectNext(titleQueue, activeTitle, nowTick)
+        val selected = selectTitleCandidate(nowTick)
         if (selected != null && shouldActivate(selected, activeTitle, nowTick)) {
             val minTicks = max(selected.request.meta.minShowTicks, selected.request.fadeInTicks + selected.request.stayTicks)
             val maxTicks = max(selected.request.meta.maxShowTicks, minTicks + selected.request.fadeOutTicks)
@@ -775,6 +838,14 @@ private class PlayerHudState(
             PlayerHudRenderer.showTitle(player, selected.request)
             queueLog("DISPATCH channel=TITLE player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
         }
+    }
+
+    private fun selectTitleCandidate(nowTick: Long): QueueEntry.Title? {
+        if (nowTick < titleDominanceUntilTick) {
+            val best = titleQueue.bestCandidate(nowTick) ?: return null
+            if (best.priority() < titleDominancePriority) return null
+        }
+        return selectNext(titleQueue, activeTitle, nowTick)
     }
 
     private fun processScoreboard(player: Player, nowTick: Long) {

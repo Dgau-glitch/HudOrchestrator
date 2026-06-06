@@ -20,7 +20,8 @@
 
 ### Правило A: QuestCore всегда сверху
 - Все важные сценарии `QuestCore` отправлять с `PREEMPT` и приоритетом `90`.
-- Для непрерывных потоков `QuestCore` использовать `COALESCE + stickinessTicks` (6–10), чтобы другие не «вклинивались» и не вызывали мигание.
+- `source-overrides` для `QuestCore:*` включают строгий dominance window: пока QuestCore активен или обновляется, более низкие `ArtifactItems`/`NoUseItem` кандидаты в `ACTION_BAR` и `TITLE` не dispatch'ятся и очищаются из pending-очереди. Для `priority >= 90` HudOrchestrator также включает PacketEvents firewall и cancel'ит внешние ActionBar/Title packets в этом окне, чтобы прямые Bukkit/PacketEvents отправки других плагинов не мигали поверх QuestCore.
+- Для непрерывных потоков `QuestCore` использовать стабильный `sourceId` и частые refresh-submit через HudOrchestrator, чтобы dominance window продлевался и не было пауз для мигания.
 
 ### Правило B: ArtifactItems выше noUseItem
 - Основной поток `ArtifactItems` — приоритет `75`.
@@ -127,7 +128,7 @@ HudRequestMeta(
 
 ## 6.2 Почему `noUseItem` больше не должен мигать поверх ArtifactItems
 
-`noUseItem` должен использовать `DROP_IF_BUSY` и низкий `priority=25`. При такой комбинации HudOrchestrator считает его fallback-сообщением: если сейчас активен/доминирует/ожидает или только что был принят источник с более высоким приоритетом (`ArtifactItems=75`, `QuestCore=90`), запрос `noUseItem` отбрасывается и не отправляется в Minecraft ActionBar API. Дополнительно fallback-запросы `DROP_IF_BUSY` ждут стабильное idle-окно `action-bar.fallback-idle-grace-ticks` перед dispatch, поэтому high-priority обновления, пришедшие в ближайшие тики, удалят их без миллисекундного flash. Для `ArtifactItems:*` рекомендуется `dominance-ticks: 20`, чтобы закрывать короткие паузы между частыми обновлениями артефактов.
+`noUseItem` должен использовать `DROP_IF_BUSY` и низкий `priority=25`. При такой комбинации HudOrchestrator считает его fallback-сообщением: если сейчас активен/доминирует/ожидает или только что был принят источник с более высоким приоритетом (`ArtifactItems=75`, `QuestCore=90`), запрос `noUseItem` отбрасывается и не отправляется в Minecraft ActionBar API. Дополнительно fallback-запросы `DROP_IF_BUSY` ждут стабильное idle-окно `action-bar.fallback-idle-grace-ticks` перед dispatch, поэтому high-priority обновления, пришедшие в ближайшие тики, удалят их без миллисекундного flash. Для `ArtifactItems:*` рекомендуется `dominance-ticks: 20`, чтобы закрывать короткие паузы между частыми обновлениями артефактов. Для `QuestCore:*` dominance применяется строже и к `ACTION_BAR`, и к `TITLE`: низкоприоритетные pending-заявки удаляются при принятии QuestCore, а новые низкоприоритетные кандидаты ждут окончания dominance window вместо того, чтобы мелькать между quest refresh.
 
 Если какому-то низкоприоритетному сценарию нужно именно дождаться очереди, а не быть отброшенным, для него надо выбрать `ENQUEUE` или `COALESCE`, но не `DROP_IF_BUSY`.
 

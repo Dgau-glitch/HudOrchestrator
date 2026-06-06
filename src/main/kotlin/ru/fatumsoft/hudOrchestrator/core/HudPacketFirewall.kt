@@ -12,6 +12,7 @@ import java.util.EnumMap
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Outbound packet guard for strict QuestCore dominance windows.
@@ -21,9 +22,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal object HudPacketFirewall : PacketListenerAbstract(PacketListenerPriority.HIGHEST) {
     private const val TICK_MILLIS = 50L
+    private const val OWNED_PACKET_ALLOWANCE_MILLIS = 250L
     private val registered = AtomicBoolean(false)
     private val suppressedUntilMillis = ConcurrentHashMap<UUID, EnumMap<HudChannel, Long>>()
-    private val allowedPackets = ThreadLocal.withInitial { HashMap<PacketAllowance, Int>() }
+    private val ownedPacketBudgets = ConcurrentHashMap<PacketAllowance, PacketBudget>()
 
     fun register() {
         if (registered.compareAndSet(false, true)) {
@@ -35,6 +37,7 @@ internal object HudPacketFirewall : PacketListenerAbstract(PacketListenerPriorit
         if (registered.compareAndSet(true, false)) {
             PacketEvents.getAPI().eventManager.unregisterListener(this)
             suppressedUntilMillis.clear()
+            ownedPacketBudgets.clear()
         }
     }
 
@@ -48,17 +51,16 @@ internal object HudPacketFirewall : PacketListenerAbstract(PacketListenerPriorit
         }
     }
 
-    fun <T> allowHudPacket(playerId: UUID, channel: HudChannel, block: () -> T): T {
+    fun <T> allowHudPacket(playerId: UUID, channel: HudChannel, packetCount: Int = 1, block: () -> T): T {
         val key = PacketAllowance(playerId, channel)
-        val map = allowedPackets.get()
-        map[key] = (map[key] ?: 0) + 1
-        return try {
-            block()
-        } finally {
-            val next = (map[key] ?: 1) - 1
-            if (next <= 0) map.remove(key) else map[key] = next
-            if (map.isEmpty()) allowedPackets.remove()
+        val expiresAtMillis = System.currentTimeMillis() + OWNED_PACKET_ALLOWANCE_MILLIS
+        ownedPacketBudgets.compute(key) { _, current ->
+            val budget = current?.takeIf { it.expiresAtMillis > System.currentTimeMillis() } ?: PacketBudget(AtomicInteger(0), expiresAtMillis)
+            budget.count.addAndGet(packetCount.coerceAtLeast(1))
+            budget.expiresAtMillis = maxOf(budget.expiresAtMillis, expiresAtMillis)
+            budget
         }
+        return block()
     }
 
     override fun onPacketSend(event: PacketSendEvent) {
@@ -76,7 +78,16 @@ internal object HudPacketFirewall : PacketListenerAbstract(PacketListenerPriorit
     }
 
     private fun isAllowed(playerId: UUID, channel: HudChannel): Boolean {
-        return (allowedPackets.get()[PacketAllowance(playerId, channel)] ?: 0) > 0
+        val key = PacketAllowance(playerId, channel)
+        val budget = ownedPacketBudgets[key] ?: return false
+        val nowMillis = System.currentTimeMillis()
+        if (nowMillis > budget.expiresAtMillis) {
+            ownedPacketBudgets.remove(key, budget)
+            return false
+        }
+        val remaining = budget.count.decrementAndGet()
+        if (remaining <= 0) ownedPacketBudgets.remove(key, budget)
+        return remaining >= 0
     }
 
     private fun clearExpired(playerId: UUID, channel: HudChannel, nowMillis: Long) {
@@ -102,4 +113,5 @@ internal object HudPacketFirewall : PacketListenerAbstract(PacketListenerPriorit
     }
 
     private data class PacketAllowance(val playerId: UUID, val channel: HudChannel)
+    private data class PacketBudget(val count: AtomicInteger, var expiresAtMillis: Long)
 }

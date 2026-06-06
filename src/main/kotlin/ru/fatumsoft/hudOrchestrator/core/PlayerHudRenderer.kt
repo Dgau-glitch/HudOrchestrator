@@ -2,6 +2,7 @@ package ru.fatumsoft.hudOrchestrator.core
 
 import com.github.retrooper.packetevents.PacketEvents
 import com.github.retrooper.packetevents.wrapper.PacketWrapper
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerActionBar
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDisplayScoreboard
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerResetScore
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerScoreboardObjective
@@ -40,8 +41,9 @@ internal object PlayerHudRenderer {
 
     fun sendActionBar(player: Player, request: ActionBarRequest) {
         requireEntityThread(player)
-        HudPacketFirewall.allowHudPacket(player.uniqueId, HudChannel.ACTION_BAR) {
+        HudPacketFirewall.allowHudPacket(player.uniqueId, HudChannel.ACTION_BAR, packetCount = 2) {
             sendPacket(player, WrapperPlayServerSystemChatMessage(true, request.content))
+            sendPacket(player, WrapperPlayServerActionBar(request.content))
         }
     }
 

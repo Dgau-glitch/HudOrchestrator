@@ -118,7 +118,8 @@ class HudOrchestrator : JavaPlugin() {
             scoreboardRateLimit = loadRateLimit("rate-limit.scoreboard", 4.0, 1.0),
             queueLoggingEnabled = config.getBoolean("debug.queue-logging", false),
             sourcePolicyOverrides = loadSourceOverrides(),
-            actionBarFallbackIdleGraceTicks = config.getInt("action-bar.fallback-idle-grace-ticks", 6).coerceAtLeast(0)
+            actionBarFallbackIdleGraceTicks = config.getInt("action-bar.fallback-idle-grace-ticks", 6).coerceAtLeast(0),
+            packetFirewallMinPriority = config.getInt("strict-dominance.packet-firewall-min-priority", 75)
         )
     }
 }

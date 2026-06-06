@@ -231,14 +231,14 @@ source-overrides:
 
 Если источник отправил или поставил в очередь сообщение с `dominanceTicks > 0`, HudOrchestrator держит защитное окно для этого приоритета.
 Низкоприоритетные кандидаты блокируются не только во время показа, но и между обновлениями доминирующего потока. Для `TITLE` применяется та же strict-очередь: пока dominance window активен, более низкий title-кандидат не dispatch'ится даже если активный title уже истёк. Это убирает “мигание”
-низкоприоритетных сообщений поверх `ArtifactItems`/`QuestCore`. При принятии более приоритетной заявки HudOrchestrator также удаляет pending-заявки с меньшим priority в том же канале, чтобы старый `ArtifactItems` не всплывал сразу после `QuestCore`. Для источников с `priority >= 90` и `dominanceTicks > 0` дополнительно включается PacketEvents firewall: внешние `ACTION_BAR`/`TITLE` packets для этого игрока временно cancel'ятся, а packets, отправленные самим HudOrchestrator, пропускаются через internal allowance.
+низкоприоритетных сообщений поверх `ArtifactItems`/`QuestCore`. При принятии более приоритетной заявки HudOrchestrator также удаляет pending-заявки с меньшим priority в том же канале, чтобы старый `ArtifactItems` не всплывал сразу после `QuestCore`. Для источников с `priority >= strict-dominance.packet-firewall-min-priority` (по умолчанию `75`, то есть `ArtifactItems` и `QuestCore`) и `dominanceTicks > 0` дополнительно включается PacketEvents firewall: внешние `ACTION_BAR`/`TITLE` packets для этого игрока временно cancel'ятся, а packets, отправленные самим HudOrchestrator, пропускаются через internal allowance.
 
 
 ## 11.3 Строгая защита приоритета для `DROP_IF_BUSY`
 
 Для `ACTION_BAR` низкоприоритетный запрос с `DROP_IF_BUSY` теперь не только не вытесняет активный HUD, но и не попадает в очередь, если есть активный, sticky/dominance или pending-кандидат с более высоким `priority`.
 
-Практический эффект: `NoUseItem` при спаме не должен отправляться в Minecraft ActionBar API поверх `ArtifactItems`/`QuestCore`; он будет отброшен как fallback, пока высокоприоритетный источник активен, ожидает показа или недавно принял новый ActionBar-запрос. `DROP_IF_BUSY` fallback также не диспатчится мгновенно в момент submit: он ждёт стабильное idle-окно `action-bar.fallback-idle-grace-ticks`, чтобы высокоприоритетные запросы того же/следующих тиков успели вытеснить/удалить его без миллисекундного flash. Для сценариев, которые должны дождаться очереди, используйте не `DROP_IF_BUSY`, а `ENQUEUE` или `COALESCE`.
+Практический эффект: `NoUseItem` при спаме не должен отправляться в Minecraft ActionBar API поверх `ArtifactItems`/`QuestCore`; он будет отброшен как fallback, пока высокоприоритетный источник активен, ожидает показа или недавно принял новый ActionBar-запрос. Если `NoUseItem` всё ещё шлет прямой Bukkit/PacketEvents ActionBar мимо API, `ArtifactItems` dominance с priority `75` активирует firewall и такой внешний packet будет отменён. `DROP_IF_BUSY` fallback также не диспатчится мгновенно в момент submit: он ждёт стабильное idle-окно `action-bar.fallback-idle-grace-ticks`, чтобы высокоприоритетные запросы того же/следующих тиков успели вытеснить/удалить его без миллисекундного flash. Для сценариев, которые должны дождаться очереди, используйте не `DROP_IF_BUSY`, а `ENQUEUE` или `COALESCE`.
 
 ## 11.4 Stable idle grace для fallback ActionBar
 

@@ -47,7 +47,8 @@ data class HudOrchestratorRuntimeConfig(
     val scoreboardRateLimit: ChannelRateLimitConfig,
     val queueLoggingEnabled: Boolean,
     val sourcePolicyOverrides: List<SourcePolicyOverride> = emptyList(),
-    val actionBarFallbackIdleGraceTicks: Int = 6
+    val actionBarFallbackIdleGraceTicks: Int = 6,
+    val packetFirewallMinPriority: Int = 75
 ) {
     fun forChannel(channel: HudChannel): ChannelRateLimitConfig {
         return when (channel) {
@@ -175,7 +176,7 @@ class HudOrchestratorService(
         val regex = pattern
             .split('*')
             .joinToString(".*") { Regex.escape(it) }
-        return Regex("^$regex$").matches(sourceId)
+        return Regex("^$regex$", RegexOption.IGNORE_CASE).matches(sourceId)
     }
 
     override fun submitActionBar(playerId: UUID, request: ActionBarRequest): HudHandle? = runOnPlayerThread(playerId, "submitActionBar") { player ->
@@ -278,7 +279,7 @@ class HudOrchestratorService(
         meta: ru.fatumsoft.hudOrchestrator.api.HudRequestMeta,
         visibleTicks: Int
     ) {
-        if (meta.priority < STRICT_DOMINANCE_PRIORITY || meta.dominanceTicks <= 0) return
+        if (meta.priority < runtimeConfig.packetFirewallMinPriority || meta.dominanceTicks <= 0) return
         HudPacketFirewall.suppress(playerId, channel, max(visibleTicks, 1).toLong() + meta.dominanceTicks.toLong())
     }
 
@@ -504,7 +505,6 @@ class HudOrchestratorService(
     }
 
     companion object {
-        private const val STRICT_DOMINANCE_PRIORITY = 90
         private val SOURCE_PATTERN = Regex("^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*$")
     }
 }

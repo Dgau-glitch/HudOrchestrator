@@ -33,6 +33,12 @@ action-bar:
   # before dispatch. This prevents millisecond flashes between high-priority updates.
   fallback-idle-grace-ticks: 6
 
+strict-dominance:
+  # Sources at/above this priority with dominance-ticks > 0 activate the PacketEvents
+  # firewall for ACTION_BAR/TITLE. Default 75 covers ArtifactItems over NoUseItem;
+  # QuestCore remains stronger because it uses priority 90.
+  packet-firewall-min-priority: 75
+
 source-overrides:
   questcore:
     pattern: "QuestCore:*"
@@ -44,8 +50,8 @@ source-overrides:
   artifact-items:
     pattern: "ArtifactItems:*"
     priority: 75
-    stickiness-ticks: 10
-    dominance-ticks: 20
+    stickiness-ticks: 12
+    dominance-ticks: 40
   no-use-item:
     pattern: "NoUseItem:*"
     priority: 25

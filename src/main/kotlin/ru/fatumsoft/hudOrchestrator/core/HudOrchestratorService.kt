@@ -519,6 +519,7 @@ private class PlayerHudState(
     val scoreboardQueue = HudQueue<QueueEntry.Scoreboard>(maxSize = 32)
     val rateLimiter = PlayerRateLimiter(runtimeConfig)
     private val actionBarFallbackIdleGraceTicks = runtimeConfig.actionBarFallbackIdleGraceTicks.toLong()
+    private val packetFirewallMinPriority = runtimeConfig.packetFirewallMinPriority
 
     private var activeActionBar: ActiveEntry<QueueEntry.ActionBar>? = null
     private var activeTitle: ActiveEntry<QueueEntry.Title>? = null
@@ -537,6 +538,7 @@ private class PlayerHudState(
 
     companion object {
         private const val DEFAULT_PRIORITY_FLOOR_GUARD_TICKS = 20
+        private const val PACKET_FIREWALL_REFRESH_TICKS = 3L
     }
 
     fun currentTick(): Long = localTick
@@ -768,6 +770,7 @@ private class PlayerHudState(
         actionBarQueue.discardExpired(nowTick)
         val current = activeActionBar
         if (current != null && current.isExpired(nowTick)) activeActionBar = null
+        refreshActionBarPacketFirewall(player.uniqueId, nowTick)
         if (activeActionBar == null && actionBarIdleSinceTick == null) actionBarIdleSinceTick = nowTick
 
         val selected = selectActionBarCandidate(nowTick)
@@ -786,6 +789,7 @@ private class PlayerHudState(
                 actionBarDominanceUntilTick = expireAtTick + selected.request.meta.dominanceTicks
                 actionBarDominancePriority = selected.request.meta.priority
             }
+            refreshActionBarPacketFirewall(player.uniqueId, nowTick)
             queueLog("DISPATCH channel=ACTION_BAR player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
         } else {
             val active = activeActionBar ?: return
@@ -794,6 +798,17 @@ private class PlayerHudState(
                 PlayerHudRenderer.sendActionBar(player, active.entry.request)
                 active.lastSendTick = nowTick
             }
+        }
+    }
+
+    private fun refreshActionBarPacketFirewall(playerId: UUID, nowTick: Long) {
+        val activePriority = activeActionBar
+            ?.takeUnless { it.isExpired(nowTick) }
+            ?.entry
+            ?.priority() ?: Int.MIN_VALUE
+        val dominancePriority = if (nowTick < actionBarDominanceUntilTick) actionBarDominancePriority else Int.MIN_VALUE
+        if (max(activePriority, dominancePriority) >= packetFirewallMinPriority) {
+            HudPacketFirewall.suppress(playerId, HudChannel.ACTION_BAR, PACKET_FIREWALL_REFRESH_TICKS)
         }
     }
 
@@ -834,6 +849,7 @@ private class PlayerHudState(
         titleQueue.discardExpired(nowTick)
         val current = activeTitle
         if (current != null && current.isExpired(nowTick)) activeTitle = null
+        refreshTitlePacketFirewall(player.uniqueId, nowTick)
 
         val selected = selectTitleCandidate(nowTick)
         if (selected != null && shouldActivate(selected, activeTitle, nowTick)) {
@@ -841,7 +857,19 @@ private class PlayerHudState(
             val maxTicks = max(selected.request.meta.maxShowTicks, minTicks + selected.request.fadeOutTicks)
             activeTitle = ActiveEntry(selected, nowTick + minTicks, nowTick + maxTicks, nowTick)
             PlayerHudRenderer.showTitle(player, selected.request)
+            refreshTitlePacketFirewall(player.uniqueId, nowTick)
             queueLog("DISPATCH channel=TITLE player=${player.uniqueId} source=${selected.request.meta.sourceId} priority=${selected.request.meta.priority}")
+        }
+    }
+
+    private fun refreshTitlePacketFirewall(playerId: UUID, nowTick: Long) {
+        val activePriority = activeTitle
+            ?.takeUnless { it.isExpired(nowTick) }
+            ?.entry
+            ?.priority() ?: Int.MIN_VALUE
+        val dominancePriority = if (nowTick < titleDominanceUntilTick) titleDominancePriority else Int.MIN_VALUE
+        if (max(activePriority, dominancePriority) >= packetFirewallMinPriority) {
+            HudPacketFirewall.suppress(playerId, HudChannel.TITLE, PACKET_FIREWALL_REFRESH_TICKS)
         }
     }
 

@@ -1,5 +1,6 @@
 package ru.fatumsoft.hudOrchestrator
 
+import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
 import org.bukkit.plugin.ServicePriority
@@ -37,6 +38,7 @@ class HudOrchestrator : JavaPlugin() {
     fun reloadOrchestratorConfig(): CompletableFuture<Unit> = reloadOrchestratorConfigAsync()
 
     fun reloadOrchestratorConfigAsync(): CompletableFuture<Unit> {
+        if (!isEnabled || Bukkit.isStopping()) return CompletableFuture.completedFuture(Unit)
         val future = CompletableFuture<Unit>()
         lifecycleScheduler.runGlobal {
             try {
@@ -51,6 +53,10 @@ class HudOrchestrator : JavaPlugin() {
     }
 
     fun sendCommandFeedback(sender: CommandSender, message: String) {
+        if (!isEnabled || Bukkit.isStopping()) {
+            if (sender !is Player) sender.sendMessage(message)
+            return
+        }
         if (sender is Player) {
             lifecycleScheduler.runPlayer(sender, {
                 sender.sendMessage(message)

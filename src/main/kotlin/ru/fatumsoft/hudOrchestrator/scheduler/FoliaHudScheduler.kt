@@ -16,11 +16,13 @@ import java.util.concurrent.TimeUnit
  */
 class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
     override fun runGlobal(task: () -> Unit): ScheduledHudTask {
+        if (!canSchedule()) return ScheduledHudTask { }
         val scheduled = plugin.server.globalRegionScheduler.run(plugin) { task() }
         return scheduled.asHudTask()
     }
 
     override fun runGlobalRepeating(initialDelayTicks: Long, periodTicks: Long, task: () -> Unit): ScheduledHudTask {
+        if (!canSchedule()) return ScheduledHudTask { }
         val scheduled = plugin.server.globalRegionScheduler.runAtFixedRate(
             plugin,
             { task() },
@@ -31,6 +33,7 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
     }
 
     override fun runPlayer(player: Player, task: () -> Unit, retired: (() -> Unit)?): ScheduledHudTask? {
+        if (!canSchedule()) return null
         if (Bukkit.isOwnedByCurrentRegion(player)) {
             task()
             return ScheduledHudTask { }
@@ -40,6 +43,7 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
     }
 
     override fun runPlayerDelayed(player: Player, delayTicks: Long, task: () -> Unit, retired: (() -> Unit)?): ScheduledHudTask? {
+        if (!canSchedule()) return null
         val scheduled = player.scheduler.runDelayed(
             plugin,
             { task() },
@@ -56,6 +60,7 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
         task: () -> Unit,
         retired: (() -> Unit)?
     ): ScheduledHudTask? {
+        if (!canSchedule()) return null
         val scheduled = player.scheduler.runAtFixedRate(
             plugin,
             { task() },
@@ -68,6 +73,11 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
 
     override fun <T> supplyPlayer(player: Player, task: () -> T, retired: (() -> Unit)?): CompletableFuture<T> {
         val future = CompletableFuture<T>()
+        if (!canSchedule()) {
+            retired?.invoke()
+            future.completeExceptionally(IllegalStateException("Player scheduler is unavailable during plugin/server shutdown"))
+            return future
+        }
         if (Bukkit.isOwnedByCurrentRegion(player)) {
             completeFuture(future, task)
             return future
@@ -91,16 +101,19 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
     }
 
     override fun runAsync(task: () -> Unit): ScheduledHudTask {
+        if (!canSchedule()) return ScheduledHudTask { }
         val scheduled = plugin.server.asyncScheduler.runNow(plugin) { task() }
         return scheduled.asHudTask()
     }
 
     override fun runAsyncDelayed(delay: Long, unit: TimeUnit, task: () -> Unit): ScheduledHudTask {
+        if (!canSchedule()) return ScheduledHudTask { }
         val scheduled = plugin.server.asyncScheduler.runDelayed(plugin, { task() }, delay, unit)
         return scheduled.asHudTask()
     }
 
     override fun runAsyncRepeating(initialDelay: Long, period: Long, unit: TimeUnit, task: () -> Unit): ScheduledHudTask {
+        if (!canSchedule()) return ScheduledHudTask { }
         val scheduled = plugin.server.asyncScheduler.runAtFixedRate(plugin, { task() }, initialDelay, period, unit)
         return scheduled.asHudTask()
     }
@@ -109,6 +122,8 @@ class FoliaHudScheduler(private val plugin: Plugin) : HudScheduler {
         plugin.server.globalRegionScheduler.cancelTasks(plugin)
         plugin.server.asyncScheduler.cancelTasks(plugin)
     }
+
+    private fun canSchedule(): Boolean = plugin.isEnabled && !Bukkit.isStopping()
 
     private fun io.papermc.paper.threadedregions.scheduler.ScheduledTask.asHudTask(): ScheduledHudTask {
         return ScheduledHudTask { cancel() }

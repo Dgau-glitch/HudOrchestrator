@@ -100,11 +100,9 @@ class HudOrchestratorService(
 
     fun shutdown() {
         HudPacketFirewall.unregister()
-        states.keys.toList().forEach { playerId ->
-            cleanupPlayer(playerId, restoreVisuals = true)
-        }
         playerTasks.values.forEach { it.cancel() }
         playerTasks.clear()
+        states.clear()
         playerRefs.clear()
     }
 
@@ -112,6 +110,8 @@ class HudOrchestratorService(
     fun onPluginDisable(event: PluginDisableEvent) {
         val disabledName = event.plugin.name
         if (disabledName.equals(plugin.name, ignoreCase = true)) return
+
+        if (!canSchedulePlayerTasks()) return
 
         states.keys.forEach { playerId ->
             runOnPlayerThread(playerId, "cancelByPluginName") {
@@ -131,6 +131,7 @@ class HudOrchestratorService(
     }
 
     private fun <T> runOnPlayerThread(playerId: UUID, actionName: String, block: (Player) -> T): T? {
+        if (!canSchedulePlayerTasks()) return null
         val player = Bukkit.getPlayer(playerId) ?: return null
         if (!player.isOnline) return null
         return try {
@@ -148,6 +149,8 @@ class HudOrchestratorService(
     }
 
 
+
+    private fun canSchedulePlayerTasks(): Boolean = plugin.isEnabled && !Bukkit.isStopping()
 
     private fun Exception.isRetiredSchedulerFailure(): Boolean {
         val cause = cause
@@ -338,6 +341,7 @@ class HudOrchestratorService(
     }
 
     private fun scheduleSubmitAsync(playerId: UUID, submit: () -> HudHandle?): CompletableFuture<HudHandle?> {
+        if (!canSchedulePlayerTasks()) return CompletableFuture.completedFuture(null)
         val player = Bukkit.getPlayer(playerId) ?: return CompletableFuture.completedFuture(null)
         if (!player.isOnline) return CompletableFuture.completedFuture(null)
 
@@ -389,7 +393,7 @@ class HudOrchestratorService(
         playerTasks.remove(playerId)?.cancel()
         playerRefs.remove(playerId)
         if (state == null) return
-        if (!restoreVisuals || player == null) return
+        if (!restoreVisuals || player == null || !canSchedulePlayerTasks()) return
 
         val scheduled = scheduler.runPlayer(player, {
             state.clearVisualState(player)
@@ -404,6 +408,7 @@ class HudOrchestratorService(
     }
 
     private fun ensurePlayerTask(playerId: UUID, player: Player) {
+        if (!canSchedulePlayerTasks()) return
         if (playerTasks.containsKey(playerId)) return
         val scheduled = scheduler.runPlayerRepeating(
             player = player,

@@ -5,6 +5,7 @@ import com.github.retrooper.packetevents.wrapper.PacketWrapper
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDisplayScoreboard
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerResetScore
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerScoreboardObjective
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTeams
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerUpdateScore
 import com.github.retrooper.packetevents.protocol.score.ScoreFormat
@@ -40,7 +41,7 @@ internal object PlayerHudRenderer {
     fun sendActionBar(player: Player, request: ActionBarRequest) {
         requireEntityThread(player)
         HudPacketFirewall.allowHudPacket(player.uniqueId, HudChannel.ACTION_BAR) {
-            player.sendActionBar(request.content)
+            sendPacket(player, WrapperPlayServerSystemChatMessage(true, request.content))
         }
     }
 

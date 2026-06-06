@@ -5,6 +5,7 @@ import com.github.retrooper.packetevents.event.PacketListenerAbstract
 import com.github.retrooper.packetevents.event.PacketListenerPriority
 import com.github.retrooper.packetevents.event.PacketSendEvent
 import com.github.retrooper.packetevents.protocol.packettype.PacketType
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage
 import org.bukkit.entity.Player
 import ru.fatumsoft.hudOrchestrator.api.HudChannel
 import java.util.EnumMap
@@ -61,7 +62,7 @@ internal object HudPacketFirewall : PacketListenerAbstract(PacketListenerPriorit
     }
 
     override fun onPacketSend(event: PacketSendEvent) {
-        val channel = event.packetType.toHudChannel() ?: return
+        val channel = event.toHudChannel() ?: return
         val player = event.getPlayer<Player>()
         val playerId = player.uniqueId
         if (isAllowed(playerId, channel)) return
@@ -85,9 +86,12 @@ internal object HudPacketFirewall : PacketListenerAbstract(PacketListenerPriorit
         }
     }
 
-    private fun com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon.toHudChannel(): HudChannel? {
-        return when (this) {
+    private fun PacketSendEvent.toHudChannel(): HudChannel? {
+        return when (packetType) {
             PacketType.Play.Server.ACTION_BAR -> HudChannel.ACTION_BAR
+            PacketType.Play.Server.SYSTEM_CHAT_MESSAGE -> {
+                if (WrapperPlayServerSystemChatMessage(this).isOverlay) HudChannel.ACTION_BAR else null
+            }
             PacketType.Play.Server.TITLE,
             PacketType.Play.Server.SET_TITLE_TEXT,
             PacketType.Play.Server.SET_TITLE_SUBTITLE,

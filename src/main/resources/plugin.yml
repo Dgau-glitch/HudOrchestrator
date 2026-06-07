@@ -2,4 +2,15 @@ name: HudOrchestrator
 version: '1.0-SNAPSHOT'
 main: ru.fatumsoft.hudOrchestrator.HudOrchestrator
 api-version: '1.21'
+folia-supported: true
 authors: [ Dgau2 ]
+depend: [packetevents]
+commands:
+  hudorchestrator:
+    description: HudOrchestrator admin command
+    usage: /<command> reload
+    permission: hudorchestrator.admin
+permissions:
+  hudorchestrator.admin:
+    description: Allows using HudOrchestrator admin commands
+    default: op
